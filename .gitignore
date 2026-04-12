@@ -1,0 +1,16 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+
+# Local secrets
+**/api_key.txt
+
+# Local logs
+*.log
+
+# Runtime-generated local control files
+**/.control/settings.local.json
+**/.control/yt-dlp-cache/
+
+# Browser profiles and cache dumps
+**/chrome_clean_profile/
