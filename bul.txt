@@ -1,0 +1,2 @@
+8725: def gorsel_analiz_dialog():
+8797: def gorsel_klonla_dialog():

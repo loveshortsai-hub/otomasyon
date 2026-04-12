@@ -1,0 +1,6 @@
+2026/04/11-20:00:27.359 6cbc Creating DB C:\Users\User\Desktop\Otomasyon\Ana Sistem\Pixverse Kredi Üyeliği Oluşturma\chrome_clean_profile\Default\IndexedDB\https_app.pixverse.ai_0.indexeddb.leveldb since it was missing.
+2026/04/11-20:00:27.395 6cbc Reusing MANIFEST C:\Users\User\Desktop\Otomasyon\Ana Sistem\Pixverse Kredi Üyeliği Oluşturma\chrome_clean_profile\Default\IndexedDB\https_app.pixverse.ai_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/11-20:00:27.725 668 Level-0 table #5: started
+2026/04/11-20:00:27.728 668 Level-0 table #5: 773 bytes OK
+2026/04/11-20:00:27.731 668 Delete type=0 #3
+2026/04/11-20:00:27.732 668 Manual compaction at level-0 from '\x00\x01\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x02\x00\x00\x00' @ 0 : 0; will stop at (end)

@@ -1,0 +1,19 @@
+{
+  "script_path": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Toplu Video Montaj\\toplu_video.py",
+  "ana_klasor": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Toplu Video Montaj",
+  "video_kaynak_ana_yol": "C:\\\\Users\\\\User\\\\Desktop\\\\Otomasyon\\\\Video\\\\Video",
+  "klon_video_kaynak_ana_yol": "C:\\Users\\User\\Desktop\\Otomasyon\\Klon Video",
+  "toplu_montaj_klasor": "C:\\Users\\User\\Desktop\\Otomasyon\\Video\\Toplu Montaj",
+  "materyal_ana_yol": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Video Montaj\\ek",
+  "format_choice": "D",
+  "selection_text": "2",
+  "source_mode": "Mevcut Videolar",
+  "source_selection_text": "T",
+  "selected_source_indices": [],
+  "muzik_seviyesi": "15",
+  "ses_efekti_seviyesi": "15",
+  "orijinal_ses_seviyesi": "100",
+  "video_ses_seviyesi": "100",
+  "orijinal_ses_kaynaklari": [],
+  "baslik": "Youtube Video"
+}

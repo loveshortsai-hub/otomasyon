@@ -1,0 +1,6 @@
+Video 1: Koridor yerine oturma odası olarak değiştir.
+Video 2: Gündüz yerine gece olarak değiştir.
+Video 3: Kediler yerine köpekler olarak değiştir.
+Video 4: Optik ilizyon halısı lavlı olacak şekilde değiştir.
+Video 5: Optik ilizyon halısını daha korkutucu olacak şekilde değiştir.
+Video 6: Optik ilizyon halısını daha korkutucu olacak şekilde değiştir.

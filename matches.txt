@@ -1,0 +1,83 @@
+242: if "ek_dialog_open" not in st.session_state: st.session_state.ek_dialog_open = None
+245: if "_ek_dialog_return_align" not in st.session_state: st.session_state._ek_dialog_return_align = "left"
+341:     st.session_state.ek_dialog_open = None
+6561:         st.session_state.ek_dialog_open = "tv_asset_manager"
+6688:             st.session_state.ek_dialog_open = "toplu_video"
+6697:             st.session_state.ek_dialog_open = "toplu_video"
+6733:         st.session_state.ek_dialog_open = "toplu_video"
+6742:         st.session_state.ek_dialog_open = "menu"
+6831:         st.session_state.ek_dialog_open = "vm_asset_manager"
+6949:             st.session_state.ek_dialog_open = "video_montaj"
+6958:             st.session_state.ek_dialog_open = "video_montaj"
+6990:         st.session_state.ek_dialog_open = "video_montaj"
+6999:         st.session_state.ek_dialog_open = "menu"
+7013:         st.session_state.ek_dialog_open = "video_montaj"
+7027:         st.session_state.ek_dialog_open = "toplu_video"
+7032: @st.dialog("🗂️ Dosya Yöneticisi", width="large")
+7186:                                 st.session_state.ek_dialog_open = "dosya_yoneticisi"
+7313:                             st.session_state.ek_dialog_open = "dosya_yoneticisi"
+7409:                 st.session_state.ek_dialog_open = "dosya_yoneticisi"
+7417:                 st.session_state.ek_dialog_open = "dosya_yoneticisi"
+7640:         st.session_state.ek_dialog_open = None
+7888: def ek_islemler_menu_dialog():
+7895:         st.session_state.ek_dialog_open = "youtube_link"
+7901:         st.session_state.ek_dialog_open = "video_listesi"
+7908:         st.session_state.ek_dialog_open = "video_ekle"
+7923:             st.session_state.ek_dialog_open = "menu"
+7941:             st.session_state.ek_dialog_open = "gorsel_analiz"
+7953:             st.session_state.ek_dialog_open = "gorsel_klonla"
+7965:             st.session_state.ek_dialog_open = "prompt_duzeltme"
+7976:         if st.button("🖼️ Görsel Oluştur", key="dlg_btn_gorsel_olustur", use_container_width=True, disabled=is_ui_locked()):
+7977:             st.session_state.ek_dialog_open = "gorsel_olustur"
+7989:             st.session_state.ek_dialog_open = "video_montaj"
+8001:             st.session_state.ek_dialog_open = "toplu_video"
+8013:             st.session_state.ek_dialog_open = "sosyal_medya"
+8019:         st.session_state.ek_dialog_open = "prompt_ayarlari"
+8025:         st.session_state.ek_dialog_open = "video_ayarlari"
+8031:         st.session_state.ek_dialog_open = "kredi"
+8133:         st.session_state.ek_dialog_open = "youtube_link"
+8169:             st.session_state.ek_dialog_open = "menu"
+8232:                 st.session_state.ek_dialog_open = "video_listesi"
+8244:                 st.session_state.ek_dialog_open = "video_listesi"
+8251:                 st.session_state.ek_dialog_open = "menu"
+8351:                 st.session_state.ek_dialog_open = "menu"
+8371:                 st.session_state.ek_dialog_open = "video_bolumle"
+8393:             st.session_state.ek_dialog_open = "video_ekle"
+8402:             st.session_state.ek_dialog_open = "video_ekle"
+8689:                             st.session_state.ek_dialog_open = "video_ekle"
+8707:             st.session_state.ek_dialog_open = "video_ekle"
+8719:         st.session_state.last_dialog_align = st.session_state.get("_ek_dialog_return_align", "left")
+8720:         st.session_state.ek_dialog_open = st.session_state.get("_ek_dialog_return", "gorsel_analiz")
+8736:         st.session_state.ek_dialog_open = "gorsel_analiz"
+8772:                                     st.session_state.lightbox_gorsel = {"path": g_yol, "adi": g_adi}; st.session_state._ek_dialog_return = "gorsel_analiz"; st.rerun()
+8782:                             st.session_state.ek_dialog_open = "gorsel_analiz"
+8787:                     if st.button("⬅️ Geri", key="bck1", use_container_width=True): st.session_state.ek_dialog_open = "menu"; st.rerun()
+8793:         if st.button("⬅️ Geri", key="bck2", use_container_width=True): st.session_state.ek_dialog_open = "menu"; st.rerun()
+8953:                 st.session_state.ek_dialog_open = "gorsel_klonla"
+8963:                 st.session_state.ek_dialog_open = "gorsel_klonla"
+8982:             st.session_state.ek_dialog_open = "gorsel_klonla"
+8991:     if st.button("⬅️ Geri", key="bck3", use_container_width=True): st.session_state.ek_dialog_open = "menu"; st.rerun()
+9074:                 st.session_state.ek_dialog_open = "prompt_duzeltme"
+9082:                 st.session_state.ek_dialog_open = "prompt_duzeltme"
+9098:             st.session_state.ek_dialog_open = "prompt_duzeltme"
+9108:         st.session_state.ek_dialog_open = "menu"; st.rerun()
+9686:             st.session_state.ek_dialog_open = "sosyal_medya"
+9701:         st.session_state.ek_dialog_open = "menu"
+9871:             st.session_state.ek_dialog_open = "menu"
+9883:             st.session_state.ek_dialog_open = "prompt_ayarlari"
+10254:             st.session_state.ek_dialog_open = "menu"
+10357:         st.session_state.ek_dialog_open = "menu"
+10509:             if st.button("📂 Ek İşlemler", key="btn_ek_islemler_open", use_container_width=True, disabled=is_ui_locked()):
+10512:                 st.session_state.ek_dialog_open = "menu"
+10552:         st.session_state.ek_dialog_open = None  # Açık dialog varsa kapat
+10599:             st.session_state.ek_dialog_open = None
+11104:         if st.button("🗂️ Dosya Yöneticisi", use_container_width=True, disabled=is_ui_locked(), on_click=clear_dialog_states): 
+11106:             st.session_state.ek_dialog_open = "dosya_yoneticisi"; st.rerun()
+11116:             st.session_state.single_mode = False; st.session_state.single_step = None; st.session_state.ek_dialog_open = None
+11142: @st.dialog("🖼️ Görsel Oluştur", width="large")
+11274:             st.session_state.ek_dialog_open = None
+11280:             st.session_state.ek_dialog_open = "menu"
+11284:             st.session_state.ek_dialog_open = None
+11303:         hedef = st.session_state.get("ek_dialog_open")
+11309:                 st.session_state.ek_dialog_open = None
+11311:             ek_islemler_menu_dialog()
