@@ -1,0 +1,6 @@
+Hesap Modu: Toplu Hesap
+Hesap Döngü: Kapalı
+Hesaplar:
+API Token: SLiVi7Aakz_qkcv4tzJxI1mIJ7_irSJGeyVznXi4pI0 | Seçili: Evet
+API Token: tEDSbCfcL7elTLar9IiPjSQI_IJaaDmN6gWRCQ4jiNe | Seçili: Evet
+API Token: OsPOg8-kq38r8ONhBzNuRkXKerjwwSs9LIyRDOivaYK | Seçili: Evet

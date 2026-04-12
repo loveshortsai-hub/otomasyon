@@ -1,0 +1,15 @@
+{
+  "script_path": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Video Montaj\\video_montaj.py",
+  "ana_klasor": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Video Montaj",
+  "video_klasor": "C:\\\\Users\\\\User\\\\Desktop\\\\Otomasyon\\\\Eklenen Video",
+  "klon_video_klasor": "",
+  "montaj_klasor": "C:\\Users\\User\\Desktop\\Otomasyon\\Video\\Montaj",
+  "gorsel_klasor": "C:\\Users\\User\\Desktop\\Otomasyon\\Ana Sistem\\Video Montaj\\ek\\görsel",
+  "format_choice": "D",
+  "selection_text": "T,O",
+  "orijinal_ses_seviyesi": "100",
+  "video_ses_seviyesi": "100",
+  "orijinal_ses_kaynaklari": [
+    "C:\\\\Users\\\\User\\\\Desktop\\\\Otomasyon\\\\Eklenen Video\\Video 2\\pixverse_mp4_media_web_ori_f169c460-2adc-4f74-bf71-bed40ce4377e_seed822407790.mp4"
+  ]
+}

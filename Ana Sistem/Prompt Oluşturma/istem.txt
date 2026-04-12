@@ -1,0 +1,96 @@
+Analyze the uploaded video in a single pass and produce a structured result based only on what is actually visible and audible in the video.
+
+Strict rules:
+- Do not invent any dialogue, animal sounds, characters, objects, actions, emotions, camera angles, lighting conditions, locations, or equipment details.
+- If speech exists, transcribe only the exact real speech.
+- If no speech exists, write: NO SPEECH PRESENT — DO NOT ADD ANY DIALOGUE.
+- If a detail is unclear, write UNKNOWN only when necessary, and never guess.
+- Do not add alternate camera angles if they do not exist.
+- Do not add cinematic effects unless they are clearly visible in the video.
+- Only use factual observations from the actual video.
+- Keep all observations consistent with the real sequence of events in the video.
+- Any statement about recording device, camera type, lens type, or production quality must be based only on strong visible evidence.
+- Never guess a specific camera brand or model unless it is directly obvious in the video.
+
+Analyze these elements:
+- core subject
+- number of humans and animals
+- physical appearance and clothing/fur
+- exact positions relative to each other
+- posture, gestures, movement, and interactions
+- environment and visible objects
+- time of day if visible
+- lighting source, direction, shadows, and reflections
+- camera behavior
+- framing
+- depth of field
+- motion type
+- visual tone and mood
+- real speech if present
+- exact timeline of visible actions from beginning to end
+- recording device type inference
+- camera class inference
+- lens characteristics if visually identifiable
+- whether the footage appears amateur, casual, social-media style, documentary style, or professionally produced
+
+For recording device and capture analysis, determine:
+- whether the footage appears to be shot on a smartphone, action camera, drone, webcam, security camera, consumer camera, professional camera, cinema camera, or another visible capture type
+- whether the footage feels amateur, casual handheld, polished smartphone footage, documentary-like, or professionally produced
+- whether the lens appears ultra-wide, wide, normal, telephoto, macro, anamorphic, or UNKNOWN
+- whether the depth of field suggests a phone-like computational look or a larger-sensor camera look, only if visually obvious
+- whether stabilization appears handheld, gimbal-stabilized, tripod-locked, drone-stabilized, security-fixed, or UNKNOWN
+
+If the footage appears to be recorded on a phone, explicitly state whether it looks like casual handheld smartphone footage or polished smartphone cinematic footage.
+If the footage appears to be recorded on a professional camera, explicitly describe the likely lens feel and production quality.
+
+Then produce the output in this exact format:
+
+(A) Main topic
+Write only one short main topic phrase for the video.
+
+(B) Timeline breakdown
+Write the video timeline from beginning to end using real sequential events.
+Use timestamps in this style:
+00:00–00:02
+00:02–00:05
+00:05–00:08
+For each segment, describe only what is actually visible and audible in that time range.
+Do not invent missing moments.
+If the exact timestamp boundaries are slightly unclear, estimate conservatively and stay faithful to the visible sequence.
+
+(C) Full scene breakdown
+Write a factual English description of the entire visible scene, character positions, movements, environment, lighting, mood, and visible action flow.
+
+(D) Capture device and lens analysis
+State:
+- likely recording device type
+- whether the footage appears amateur or professional
+- likely camera class
+- likely lens characteristics
+- depth of field impression
+- motion/stabilization type
+
+Use cautious wording such as:
+“LIKELY SMARTPHONE FOOTAGE”
+“LIKELY PROFESSIONAL CAMERA FOOTAGE”
+“LENS APPEARS WIDE-ANGLE”
+“DEVICE TYPE UNKNOWN — DO NOT ASSUME”
+
+Never guess a specific brand or model unless directly obvious.
+
+(E) Full camera angle verification
+State whether the video uses:
+SINGLE FIXED CAMERA ANGLE. DO NOT ADD ALTERNATE ANGLES.
+SINGLE ANGLE WITH PANNING/ZOOMING ONLY.
+or multiple real angles, described exactly as they appear.
+
+(F) Final Sora 2 optimized prompt
+Write one polished Sora 2 prompt in fluent American English using this order:
+core subject, exact capture style, exact camera setup, likely device/lens feel if visually justified, exact environment, exact lighting, character positions/actions/interactions, full chronological action flow, mood and visual tone, optional visible effects only if truly present, real speech only if present.
+
+The final Sora 2 prompt must preserve the real temporal progression of the video from beginning to end.
+Do not compress multiple actions into one vague sentence.
+Preserve the real order of events exactly as they occur in the video.
+
+Only respond in English.
+Do not include any extra explanations outside this format.
