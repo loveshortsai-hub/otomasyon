@@ -1,0 +1,27 @@
+* text=auto
+
+# Keep source and config files normalized with LF in the repository.
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Treat generated/binary assets as binary to avoid noisy diffs.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp3 binary
+*.MP3 binary
+*.wav binary
+*.mov binary
+*.MOV binary
+*.mp4 binary
+*.pyc binary
+*.pma binary
+*.tflite binary
+*.pb binary
+*.db binary
