@@ -77,7 +77,11 @@ PROMPT_EXPORT_ROOT = os.path.join(ROOT_PATH, "Prompt")
 
 # Sistem Dosyaları
 ISTEM_FILE = os.path.join(SYSTEM_PATH, "istem.txt")
-API_KEY_FILE = os.path.join(SYSTEM_PATH, "api_key.txt")
+APP_BASE_DIR = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
+SETTINGS_CANDIDATES = [
+    os.path.join(APP_BASE_DIR, ".control", "settings.local.json"),
+    os.path.join(APP_BASE_DIR, "settings.local.json"),
+]
 
 # ============ GLOBAL DEĞİŞKENLER (CACHE) ============
 # Tüm state verisini tutar
@@ -89,40 +93,30 @@ NEXT_ID_COUNTER = None
 # Öncelik sırası:
 # 1. app.py Ayarlar bölümündeki merkezi settings.local.json (gemini_api_key)
 # 2. Ortam değişkeni GEMINI_API_KEY
-# 3. Yerel api_key.txt dosyası
-# Tek başına çalıştırmak için aşağıdaki satırı aktif edebilirsiniz:
-# API_KEY_OVERRIDE = "buraya-key-girin"
+# Düz metin api_key.txt artık bilinçli olarak desteklenmiyor.
 
 def _api_key_oku():
     # 1. settings.local.json'dan oku (app.py ile entegrasyon)
-    try:
-        _app_dir = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
-        _settings_path = os.path.join(_app_dir, "settings.local.json")
-        if os.path.exists(_settings_path):
-            import json as _json
-            with open(_settings_path, "r", encoding="utf-8") as _f:
-                _data = _json.load(_f)
-            _key = _data.get("gemini_api_key", "").strip()
-            if _key:
-                return _key
-    except Exception:
-        pass
+    for _settings_path in SETTINGS_CANDIDATES:
+        try:
+            if os.path.exists(_settings_path):
+                with open(_settings_path, "r", encoding="utf-8") as _f:
+                    _data = json.load(_f)
+                _key = _data.get("gemini_api_key", "").strip()
+                if _key:
+                    return _key
+        except Exception:
+            pass
     # 2. Ortam değişkeni
     _key = os.getenv("GEMINI_API_KEY", "").strip()
     if _key:
         return _key
-    # 3. Yerel api_key.txt
-    if os.path.exists(API_KEY_FILE):
-        with open(API_KEY_FILE, "r", encoding="utf-8") as _f:
-            _key = _f.read().strip()
-        if _key:
-            return _key
     return None
 
 api_key = _api_key_oku()
 if not api_key:
     print("CRITICAL ERROR: Gemini API Key bulunamadı!")
-    print("  -> app.py Ayarlar bölümünden Gemini API Key girin.")
+    print("  -> app.py Ayarlar bölümünden Gemini API Key girin veya GEMINI_API_KEY tanımlayın.")
     exit(1)
 
 client = genai.Client(api_key=api_key)
