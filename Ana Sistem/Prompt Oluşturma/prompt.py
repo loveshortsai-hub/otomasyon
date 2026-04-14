@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 import shutil
 import json
+import threading
 # ================================
 # MERKEZI KONTROL SİSTEMİ
 # ================================
@@ -77,7 +78,13 @@ PROMPT_EXPORT_ROOT = os.path.join(ROOT_PATH, "Prompt")
 
 # Sistem Dosyaları
 ISTEM_FILE = os.path.join(SYSTEM_PATH, "istem.txt")
-API_KEY_FILE = os.path.join(SYSTEM_PATH, "api_key.txt")
+APP_BASE_DIR = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
+SETTINGS_CANDIDATES = [
+    os.path.join(APP_BASE_DIR, ".control", "settings.local.json"),
+    os.path.join(APP_BASE_DIR, "settings.local.json"),
+]
+API_REQUEST_TIMEOUT_MS = 180000
+API_HEARTBEAT_SECONDS = 10
 
 # ============ GLOBAL DEĞİŞKENLER (CACHE) ============
 # Tüm state verisini tutar
@@ -89,43 +96,77 @@ NEXT_ID_COUNTER = None
 # Öncelik sırası:
 # 1. app.py Ayarlar bölümündeki merkezi settings.local.json (gemini_api_key)
 # 2. Ortam değişkeni GEMINI_API_KEY
-# 3. Yerel api_key.txt dosyası
-# Tek başına çalıştırmak için aşağıdaki satırı aktif edebilirsiniz:
-# API_KEY_OVERRIDE = "buraya-key-girin"
+# Düz metin api_key.txt artık bilinçli olarak desteklenmiyor.
 
 def _api_key_oku():
     # 1. settings.local.json'dan oku (app.py ile entegrasyon)
-    try:
-        _app_dir = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
-        _settings_path = os.path.join(_app_dir, "settings.local.json")
-        if os.path.exists(_settings_path):
-            import json as _json
-            with open(_settings_path, "r", encoding="utf-8") as _f:
-                _data = _json.load(_f)
-            _key = _data.get("gemini_api_key", "").strip()
-            if _key:
-                return _key
-    except Exception:
-        pass
+    for _settings_path in SETTINGS_CANDIDATES:
+        try:
+            if os.path.exists(_settings_path):
+                with open(_settings_path, "r", encoding="utf-8") as _f:
+                    _data = json.load(_f)
+                _key = _data.get("gemini_api_key", "").strip()
+                if _key:
+                    return _key
+        except Exception:
+            pass
     # 2. Ortam değişkeni
     _key = os.getenv("GEMINI_API_KEY", "").strip()
     if _key:
         return _key
-    # 3. Yerel api_key.txt
-    if os.path.exists(API_KEY_FILE):
-        with open(API_KEY_FILE, "r", encoding="utf-8") as _f:
-            _key = _f.read().strip()
-        if _key:
-            return _key
     return None
+
+def _genai_client_olustur(key):
+    return genai.Client(
+        api_key=key,
+        http_options=types.HttpOptions(timeout=API_REQUEST_TIMEOUT_MS),
+    )
+
+
+def gemini_istegini_bekle(cagri, durum_mesaji, timeout_ms=API_REQUEST_TIMEOUT_MS):
+    sonuc = {}
+    hata = {}
+    tamamlandi = threading.Event()
+
+    def _runner():
+        try:
+            sonuc["value"] = cagri()
+        except BaseException as exc:
+            hata["error"] = exc
+        finally:
+            tamamlandi.set()
+
+    print(f"   {durum_mesaji}")
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+
+    baslangic = time.time()
+    sonraki_bildirim = API_HEARTBEAT_SECONDS
+
+    while not tamamlandi.wait(timeout=1):
+        bekle_pause_varsa(PAUSE_FLAG)
+        stop_kontrol_noktasinda_cik()
+
+        gecen = time.time() - baslangic
+        if gecen >= sonraki_bildirim:
+            print(f"   ... Bekleniyor ({int(gecen)} sn)")
+            sonraki_bildirim += API_HEARTBEAT_SECONDS
+
+        if timeout_ms and (gecen * 1000) >= timeout_ms:
+            raise TimeoutError(f"{durum_mesaji} zaman aşımına uğradı ({timeout_ms // 1000} sn).")
+
+    if "error" in hata:
+        raise hata["error"]
+    return sonuc.get("value")
+
 
 api_key = _api_key_oku()
 if not api_key:
     print("CRITICAL ERROR: Gemini API Key bulunamadı!")
-    print("  -> app.py Ayarlar bölümünden Gemini API Key girin.")
+    print("  -> app.py Ayarlar bölümünden Gemini API Key girin veya GEMINI_API_KEY tanımlayın.")
     exit(1)
 
-client = genai.Client(api_key=api_key)
+client = _genai_client_olustur(api_key)
 
 # ============ PAUSE & STATE FONKSİYONLARI ============
 
@@ -343,7 +384,10 @@ def yerel_video_yükle(yol):
         stop_kontrol_noktasinda_cik()
 
         upload_config = types.UploadFileConfig(mime_type=mime_type)
-        uploaded_file = client.files.upload(file=temp_file_path, config=upload_config)
+        uploaded_file = gemini_istegini_bekle(
+            lambda: client.files.upload(file=temp_file_path, config=upload_config),
+            "Video Google sunucusuna yükleniyor...",
+        )
         
         while uploaded_file.state.name == "PROCESSING":
             print("   İşleniyor... (3 sn)")
@@ -386,9 +430,12 @@ def videoyu_analiz_et(video_uri, folder_name, istem_tam):
         bekle_pause_varsa(PAUSE_FLAG)
         stop_kontrol_noktasinda_cik()
 
-        resp = client.models.generate_content(
-            model="gemini-3-pro-preview",
-            contents=[istem_tam, types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4")]
+        resp = gemini_istegini_bekle(
+            lambda: client.models.generate_content(
+                model="gemini-3-flash-preview",
+                contents=[istem_tam, types.Part.from_uri(file_uri=video_uri, mime_type="video/mp4")]
+            ),
+            "Gemini video analizi yanıtı bekleniyor...",
         )
         cevap = resp.text
         print(f"✓ Analiz tamamlandı!")
@@ -434,7 +481,7 @@ def main():
 
     try:
         selection_path = os.path.join(CONTROL_DIR, "prompt_input_selection.json")
-        if os.path.exists(selection_path):
+        if os.path.exists(selection_path) and os.path.getsize(selection_path) > 0:
             with open(selection_path, "r", encoding="utf-8") as f:
                 sel_data = json.load(f)
             if sel_data.get("mode") == "custom":

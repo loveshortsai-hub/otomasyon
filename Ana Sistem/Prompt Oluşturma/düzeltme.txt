@@ -1,0 +1,6 @@
+Prompt 1: Değiştirilmesi Gereken: Görseldeki karakteri referans görseldeki karakter olarak değiştir.
+Düzeltilmesi Gereken Dil: Tamamen ingilizce.
+Değiştirilmesi Gereken Kalite: Gerçek hayatta gerçekleşiyormuş gibi olacak. Animasyon tarzı olmayacak.
+SINGLE FIXED CAMERA ANGLE. DO NOT ADD ALTERNATE ANGLES.
+Integrate a cinematic timeline into the editing process.
+Şablon yapısını bozmadan düzeltmeyi yap. Aynı şekilde çıktı ver.

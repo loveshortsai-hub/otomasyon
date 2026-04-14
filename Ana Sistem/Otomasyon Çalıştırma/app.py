@@ -28,11 +28,88 @@ if not os.path.exists(SETTINGS_PATH) and os.path.exists(LEGACY_SETTINGS_PATH):
             pass
 
 SORA2_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Sora 2\pixverse_sora2.py"
+KLING30_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Kling 3.0\kling_30.py"
+KLINGO3_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Kling O3\kling_o3.py"
+SEEDANCE20_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Seedance 2.0\seedance 2.0.py"
 V56_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Pixverse\pixverse_v56.py"
 VEO31_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Veo\pixverse_veo31.py"
 GROK_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Grok\pixverse_grok.py"
 C1_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Pixverse C1\pixverse_c1.py"
-VIDEO_MODEL_OPTIONS = ["Sora 2", "Veo 3.1 Standard", "Grok", "PixVerse V6", "PixVerse Cinematic"]
+VIDEO_MODEL_OPTIONS = ["Sora 2", "Kling 3.0", "Kling O3", "Seedance 2.0", "Veo 3.1 Standard", "Grok", "PixVerse V6", "PixVerse Cinematic"]
+PIXVERSE_IMAGE_MODEL_OPTIONS = [
+    "Qwen Image",
+    "Nano Banana 2",
+    "Nano Banana Pro",
+    "Nano Banana",
+    "Seedream 5.0 Lite",
+    "Seedream 4.5",
+    "Seedream 4.0",
+    "Kling O3",
+    "Kling 3.0",
+]
+PIXVERSE_IMAGE_QUALITY_OPTIONS = ["Standart", "Yüksek", "Maksimum"]
+PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
+PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS = [
+    "Qwen Image",
+    "Nano Banana 2",
+    "Nano Banana Pro",
+    "Nano Banana",
+    "Seedream 5.0 Lite",
+    "Seedream 4.5",
+    "Seedream 4.0",
+    "Kling O3",
+]
+DEFAULT_GORSEL_MODEL = "Nano Banana 2"
+DEFAULT_GORSEL_KLONLAMA_MODEL = "Kling O3"
+
+
+def _normalize_pixverse_image_model(model_value, default_model=None):
+    value = str(model_value or "").strip().lower()
+    if value in {"qwen image", "qwen-image", "qwenimage"}:
+        return "Qwen Image"
+    if value in {"nano banana 2", "nanobanana2", "gemini-3.1-flash"}:
+        return "Nano Banana 2"
+    if value in {"nano banana pro", "nanobananapro", "gemini-3.0"}:
+        return "Nano Banana Pro"
+    if value in {"nano banana", "nanobanana", "gemini-2.5-flash"}:
+        return "Nano Banana"
+    if value in {"seedream 5.0 lite", "seedream5.0lite", "seedream-5.0-lite"}:
+        return "Seedream 5.0 Lite"
+    if value in {"seedream 4.5", "seedream4.5", "seedream-4.5"}:
+        return "Seedream 4.5"
+    if value in {"seedream 4.0", "seedream4.0", "seedream-4.0"}:
+        return "Seedream 4.0"
+    if value in {"kling o3", "klingo3", "kling-image-o3"}:
+        return "Kling O3"
+    if value in {"kling 3.0", "kling3.0", "kling30", "kling-image-v3"}:
+        return "Kling 3.0"
+    return default_model or DEFAULT_GORSEL_MODEL
+
+
+def _normalize_clone_image_model(model_value, default_model=None):
+    normalized = _normalize_pixverse_image_model(
+        model_value,
+        default_model or DEFAULT_GORSEL_KLONLAMA_MODEL,
+    )
+    if normalized == "Kling 3.0":
+        return default_model or DEFAULT_GORSEL_KLONLAMA_MODEL
+    if normalized in PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS:
+        return normalized
+    return default_model or DEFAULT_GORSEL_KLONLAMA_MODEL
+
+
+def _normalize_image_quality(value, default_value="Standart"):
+    normalized = str(value or "").strip().title()
+    if normalized in PIXVERSE_IMAGE_QUALITY_OPTIONS:
+        return normalized
+    return default_value if default_value in PIXVERSE_IMAGE_QUALITY_OPTIONS else PIXVERSE_IMAGE_QUALITY_OPTIONS[0]
+
+
+def _normalize_image_aspect_ratio(value, default_value="16:9"):
+    normalized = str(value or "").strip()
+    if normalized in PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS:
+        return normalized
+    return default_value if default_value in PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS else PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS[0]
 
 DEFAULT_SETTINGS = {
     "links_file": r"C:\Users\User\Desktop\Otomasyon\İndirilecek Video.txt",
@@ -46,6 +123,9 @@ DEFAULT_SETTINGS = {
     "prompt_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\prompt.py",
     "video_model": "Sora 2",
     "sora2_script": SORA2_SCRIPT_DEFAULT,
+    "kling30_script": KLING30_SCRIPT_DEFAULT,
+    "klingo3_script": KLINGO3_SCRIPT_DEFAULT,
+    "seedance20_script": SEEDANCE20_SCRIPT_DEFAULT,
     "v56_script": V56_SCRIPT_DEFAULT,
     "veo31_script": VEO31_SCRIPT_DEFAULT,
     "grok_script": GROK_SCRIPT_DEFAULT,
@@ -63,6 +143,12 @@ DEFAULT_SETTINGS = {
     "gorsel_analiz_dir": r"C:\Users\User\Desktop\Otomasyon\Görsel\Görsel Analiz",
     "klon_gorsel_dir": r"C:\Users\User\Desktop\Otomasyon\Görsel\Klon Görsel",
     "gorsel_duzelt_txt": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluştur\Görsel Düzelt.txt",
+    "gorsel_model": DEFAULT_GORSEL_MODEL,
+    "gorsel_klonlama_model": DEFAULT_GORSEL_KLONLAMA_MODEL,
+    "gorsel_kalitesi": "Standart",
+    "gorsel_boyutu": "16:9",
+    "gorsel_klonlama_kalitesi": "Standart",
+    "gorsel_klonlama_boyutu": "16:9",
     "gemini_api_key": "",
     "prompt_duzeltme_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\prompt_düzeltme.py",
     "prompt_duzeltme_txt": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\düzeltme.txt",
@@ -86,6 +172,12 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
     value = str(model_value or "").strip().lower()
     if value in {"sora 2", "sora2", "sora-2"}:
         return "Sora 2"
+    if value in {"kling 3.0", "kling3.0", "kling30", "kling-3.0", "kling 3"}:
+        return "Kling 3.0"
+    if value in {"kling o3", "klingo3", "kling-o3"}:
+        return "Kling O3"
+    if value in {"seedance 2.0", "seedance2.0", "seedance20", "seedance-2.0", "seedance 2"}:
+        return "Seedance 2.0"
     if value in {"pixverse v6", "pixversev6", "v6", "pixverse v5.6", "v5.6", "v56", "pixverse", "pixverse video", "pv"}:
         return "PixVerse V6"
     if value in {"pixverse cinematik", "pixversecinematik", "pixverse c1", "pixverse-c1", "c1", "cinematik", "pixverse cinematic", "cinematic"}:
@@ -104,6 +196,12 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
     script_name = os.path.basename(str(pixverse_script_path or "")).strip().lower()
     if script_name == "pixverse_sora2.py":
         return "Sora 2"
+    if script_name == "kling_30.py":
+        return "Kling 3.0"
+    if script_name == "kling_o3.py":
+        return "Kling O3"
+    if script_name in {"seedance 2.0.py", "seedance_2_0.py"}:
+        return "Seedance 2.0"
     if script_name in {"pixverse_v56.py", "pixverse_v6.py"}:
         return "PixVerse V6"
     if script_name == "pixverse_c1.py":
@@ -126,6 +224,12 @@ def get_active_video_script(settings: dict) -> str:
         settings.get("video_model"),
         settings.get("pixverse_script", ""),
     )
+    if model_name == "Kling 3.0":
+        return (settings.get("kling30_script") or KLING30_SCRIPT_DEFAULT).strip()
+    if model_name == "Kling O3":
+        return (settings.get("klingo3_script") or KLINGO3_SCRIPT_DEFAULT).strip()
+    if model_name == "Seedance 2.0":
+        return (settings.get("seedance20_script") or SEEDANCE20_SCRIPT_DEFAULT).strip()
     if model_name == "PixVerse V6":
         return (settings.get("v56_script") or V56_SCRIPT_DEFAULT).strip()
     if model_name == "PixVerse Cinematic":
@@ -186,7 +290,34 @@ def load_settings():
         out.get("video_model"),
         out.get("pixverse_script", ""),
     )
+    out["gorsel_model"] = _normalize_pixverse_image_model(
+        out.get("gorsel_model"),
+        DEFAULT_GORSEL_MODEL,
+    )
+    out["gorsel_klonlama_model"] = _normalize_clone_image_model(
+        out.get("gorsel_klonlama_model") or out.get("gorsel_model"),
+        DEFAULT_GORSEL_KLONLAMA_MODEL,
+    )
+    out["gorsel_kalitesi"] = _normalize_image_quality(
+        out.get("gorsel_kalitesi"),
+        "Standart",
+    )
+    out["gorsel_boyutu"] = _normalize_image_aspect_ratio(
+        out.get("gorsel_boyutu"),
+        "16:9",
+    )
+    out["gorsel_klonlama_kalitesi"] = _normalize_image_quality(
+        out.get("gorsel_klonlama_kalitesi") or out.get("gorsel_kalitesi"),
+        "Standart",
+    )
+    out["gorsel_klonlama_boyutu"] = _normalize_image_aspect_ratio(
+        out.get("gorsel_klonlama_boyutu") or out.get("gorsel_boyutu"),
+        "16:9",
+    )
     out["sora2_script"] = SORA2_SCRIPT_DEFAULT
+    out["kling30_script"] = KLING30_SCRIPT_DEFAULT
+    out["klingo3_script"] = KLINGO3_SCRIPT_DEFAULT
+    out["seedance20_script"] = SEEDANCE20_SCRIPT_DEFAULT
     out["v56_script"] = V56_SCRIPT_DEFAULT
     out["veo31_script"] = VEO31_SCRIPT_DEFAULT
     out["grok_script"] = GROK_SCRIPT_DEFAULT
@@ -201,7 +332,34 @@ def save_settings(s: dict):
         data.get("video_model"),
         data.get("pixverse_script", ""),
     )
+    data["gorsel_model"] = _normalize_pixverse_image_model(
+        data.get("gorsel_model"),
+        DEFAULT_GORSEL_MODEL,
+    )
+    data["gorsel_klonlama_model"] = _normalize_clone_image_model(
+        data.get("gorsel_klonlama_model") or data.get("gorsel_model"),
+        DEFAULT_GORSEL_KLONLAMA_MODEL,
+    )
+    data["gorsel_kalitesi"] = _normalize_image_quality(
+        data.get("gorsel_kalitesi"),
+        "Standart",
+    )
+    data["gorsel_boyutu"] = _normalize_image_aspect_ratio(
+        data.get("gorsel_boyutu"),
+        "16:9",
+    )
+    data["gorsel_klonlama_kalitesi"] = _normalize_image_quality(
+        data.get("gorsel_klonlama_kalitesi") or data.get("gorsel_kalitesi"),
+        "Standart",
+    )
+    data["gorsel_klonlama_boyutu"] = _normalize_image_aspect_ratio(
+        data.get("gorsel_klonlama_boyutu") or data.get("gorsel_boyutu"),
+        "16:9",
+    )
     data["sora2_script"] = SORA2_SCRIPT_DEFAULT
+    data["kling30_script"] = KLING30_SCRIPT_DEFAULT
+    data["klingo3_script"] = KLINGO3_SCRIPT_DEFAULT
+    data["seedance20_script"] = SEEDANCE20_SCRIPT_DEFAULT
     data["v56_script"] = V56_SCRIPT_DEFAULT
     data["veo31_script"] = VEO31_SCRIPT_DEFAULT
     data["grok_script"] = GROK_SCRIPT_DEFAULT
@@ -289,6 +447,78 @@ if "go_motion_prompt_saved" not in st.session_state: st.session_state["go_motion
 
 GORSEL_HAREKET_PROMPT_DIR = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görsel Hareklendirme Prompt"
 GORSEL_HAREKET_REFERANS_DIR = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görseller"
+GORSEL_OLUSTUR_STATE_PATH = os.path.join(CONTROL_DIR, "gorsel_olustur_state.json")
+
+
+def _normalize_gorsel_olustur_mode(value: str) -> str:
+    raw = str(value or "").strip()
+    low = raw.casefold()
+    simplified = (
+        low
+        .replace("ö", "o")
+        .replace("ü", "u")
+        .replace("ı", "i")
+        .replace("ğ", "g")
+        .replace("ş", "s")
+        .replace("ç", "c")
+        .replace("?", "o")
+    )
+    simplified = re.sub(r"[^a-z]+", "", simplified)
+    if simplified.startswith("video"):
+        return "Video"
+    if simplified.startswith("gorsel"):
+        return "Görsel"
+    return raw
+
+
+def _load_gorsel_olustur_state() -> dict:
+    state = {"mode": "", "motion_prompt_active": False}
+    try:
+        if os.path.exists(GORSEL_OLUSTUR_STATE_PATH):
+            with open(GORSEL_OLUSTUR_STATE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                mode = _normalize_gorsel_olustur_mode(data.get("mode"))
+                if mode:
+                    state["mode"] = mode
+                state["motion_prompt_active"] = bool(data.get("motion_prompt_active", False))
+    except Exception:
+        pass
+    return state
+
+
+def _save_gorsel_olustur_state(mode: str, motion_prompt_active: bool):
+    payload = {
+        "mode": _normalize_gorsel_olustur_mode(mode),
+        "motion_prompt_active": bool(motion_prompt_active),
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        os.makedirs(CONTROL_DIR, exist_ok=True)
+        with open(GORSEL_OLUSTUR_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"[WARN] Görsel Oluştur durumu kaydedilemedi: {e}")
+
+
+def _get_gorsel_motion_prompt_runtime_state() -> dict:
+    disk_state = _load_gorsel_olustur_state()
+    settings_obj = st.session_state.get("settings", {}) if isinstance(st.session_state.get("settings", {}), dict) else {}
+    mode = _normalize_gorsel_olustur_mode(
+        st.session_state.get("go_mode_val")
+        or settings_obj.get("gorsel_olustur_mode")
+        or disk_state.get("mode")
+        or ""
+    )
+    motion_prompt_active = (
+        bool(st.session_state.get("go_motion_prompt_saved", False))
+        or bool(settings_obj.get("gorsel_motion_prompt_active", False))
+        or bool(disk_state.get("motion_prompt_active", False))
+    )
+    return {
+        "mode": mode,
+        "motion_prompt_active": motion_prompt_active,
+    }
 
 
 def _has_saved_gorsel_motion_prompts() -> bool:
@@ -380,11 +610,73 @@ def _list_gorsel_olustur_reference_image_entries() -> list:
 
 
 def _should_use_gorsel_motion_prompts() -> bool:
+    runtime_state = _get_gorsel_motion_prompt_runtime_state()
     return (
-        bool(st.session_state.get("go_motion_prompt_saved", False))
-        and str(st.session_state.get("go_mode_val", "")).strip() == "Görsel"
+        bool(runtime_state.get("motion_prompt_active", False))
+        and str(runtime_state.get("mode", "")).strip() == "Görsel"
         and _has_saved_gorsel_motion_prompts()
     )
+
+
+def _count_standard_video_prompt_entries(prompt_dir: str | None = None) -> int:
+    root = str(prompt_dir or st.session_state.get("settings", {}).get("prompt_dir", "") or "").strip()
+    if not root or not os.path.isdir(root):
+        return 0
+    count = 0
+    try:
+        for name in os.listdir(root):
+            folder_path = os.path.join(root, name)
+            prompt_path = os.path.join(folder_path, "prompt.txt")
+            if not (os.path.isdir(folder_path) and name.startswith("Video Prompt") and os.path.exists(prompt_path)):
+                continue
+            try:
+                with open(prompt_path, "r", encoding="utf-8", errors="ignore") as f:
+                    if f.read().strip():
+                        count += 1
+            except Exception:
+                continue
+    except Exception:
+        return 0
+    return count
+
+
+def _resolve_video_prompt_source_for_generation() -> dict:
+    runtime_state = _get_gorsel_motion_prompt_runtime_state()
+    motion_count = len(_list_saved_gorsel_motion_prompt_entries())
+    standard_count = _count_standard_video_prompt_entries()
+    mode = str(runtime_state.get("mode", "")).strip()
+    motion_active = bool(runtime_state.get("motion_prompt_active", False))
+
+    if motion_active and mode == "Görsel" and motion_count > 0:
+        return {
+            "kind": "gorsel_motion",
+            "prompt_dir": GORSEL_HAREKET_PROMPT_DIR,
+            "ref_image_dir": GORSEL_HAREKET_REFERANS_DIR,
+            "reason": "state_active",
+            "motion_count": motion_count,
+            "standard_count": standard_count,
+        }
+
+    # Sağlam fallback: Görsel hareketlendirme promptları dolu, standart Prompt boşsa
+    # modelden bağımsız olarak hareketlendirme klasörünü kullan.
+    if motion_count > 0 and standard_count == 0 and mode != "Video":
+        return {
+            "kind": "gorsel_motion",
+            "prompt_dir": GORSEL_HAREKET_PROMPT_DIR,
+            "ref_image_dir": GORSEL_HAREKET_REFERANS_DIR,
+            "reason": "fallback_motion_only",
+            "motion_count": motion_count,
+            "standard_count": standard_count,
+        }
+
+    return {
+        "kind": "standard",
+        "prompt_dir": str(st.session_state.get("settings", {}).get("prompt_dir", "") or "").strip(),
+        "ref_image_dir": str(st.session_state.get("settings", {}).get("gorsel_klonlama_dir", "") or "").strip(),
+        "reason": "standard_prompt",
+        "motion_count": motion_count,
+        "standard_count": standard_count,
+    }
 
 
 def _recover_stale_pixverse_prompt_override_state():
@@ -511,6 +803,17 @@ def _detect_partial_status(logs_snapshot: list, node_key: str = None) -> str:
         r'g[öo]rsel\s+olmadan\s+prompt\s+ile\s+devam\s+ediliyor',
     ]
     NODE_FATAL_KALIPLARI = {
+        "gorsel_klonlama": [
+            r'Promptlar\s+y[üu]klenemedi.*i[çc]in\s+i[şs]lem\s+durduruluyor',
+            r'Giri[şs]\s+g[öo]rsel\s+klas[öo]r[üu]\s+bulunamad[iı]',
+            r'Klas[öo]r\s+listelenemedi',
+            r'Prompt\s+dosyas[iı]\s+bulunamad[iı]',
+            r'Dosya\s+okunurken\s+hata\s+olu[şs]tu',
+            r'PixVerse\s+CLI\s+bulunamad[iı]',
+            r'PixVerse\s+kimlik\s+do[ğg]rulamas[iı]\s+gerekli',
+            r'PixVerse\s+oturumu\s+do[ğg]rulanamad[iı]',
+            r'Desteklenmeyen\s+g[öo]rsel\s+klonlama\s+modeli',
+        ],
         "video_montaj": [
             r'^Hata\s*:',
             r'İ[şs]lem\s+ba[şs]ar[iı]s[iı]z',
@@ -655,9 +958,13 @@ def _normalize_hata_detay(raw_text: str) -> str:
         (r'video erişilemedi|video unavailable', 'Video Erişilemedi'),
         (r'g[öo]rsel\s+y[üu]klenemedi|image.*upload.*fail|upload.*failed', 'Görsel Yüklenemedi'),
         (r'g[öo]rsel\s+bulunamad[ıi]', 'Görsel Bulunamadı'),
+        (r'pixverse\s+cli\s+bulunamad[ıi]|pixverse.*komutu\s+bulunamad[ıi]', 'PixVerse CLI Bulunamadı'),
+        (r'pixverse.*kimlik.*doğrulama|pixverse.*auth|oturum.*doğrulanamad[ıi]|login.*required', 'PixVerse Giriş Gerekli'),
+        (r'desteklenmeyen\s+g[öo]rsel\s+klonlama\s+modeli|desteklenmeyen\s+g[öo]rsel\s+modeli|unsupported.*model', 'Desteklenmeyen Görsel Modeli'),
+        (r'credits?.*insufficient|credit.*balance|kredi.*yetersiz|payment.*required|402\b', 'Kredi Yetersiz'),
         (r'chromedriver.*only supports chrome version|only supports chrome version|current browser version is|session not created: cannot connect to chrome|cannot connect to chrome', 'ChromeDriver Sürüm Uyumsuzluğu'),
         (r'chrome\s*ba[şs]lat[ıi]lamad[ıi]|taray[ıi]c[ıi].*ba[şs]lat[ıi]lamad[ıi]', 'Tarayıcı Başlatılamadı'),
-        (r'zaman\s*a[sş][iı]m[iı]|timeout|timed?\s*out', 'Zaman Aşımı'),
+        (r'zaman\s*a[sş][iı]m[iı]|timeout|timed?\s*out|deadline.*exceeded', 'Zaman Aşımı'),
         (r'api.*key.*invalid|authentication|unauthorized|401', 'API Yetkilendirme Hatası'),
         (r'rate.*limit|too.*many.*requests|429', 'Hız Limiti Aşıldı'),
         (r'connection.*error|network|bağlantı.*hata', 'Bağlantı Hatası'),
@@ -740,6 +1047,11 @@ def _detect_hata_detay(logs_snapshot: list, node_key: str) -> str:
         r'\[ERROR\]',
         r'CRITICAL',
         r'İ[şs]lem\s+ba[şs]ar[iı]s[iı]z',
+        r'pixverse.*kimlik.*doğrulama|pixverse.*auth',
+        r'oturum.*doğrulanamad[ıi]|login.*required',
+        r'desteklenmeyen.*g[öo]rsel.*model',
+        r'credits?.*insufficient|kredi.*yetersiz|payment.*required|402\b',
+        r'deadline.*exceeded',
         r'İ[şs]lenecek\s+Video\s+Prompt\s+klas[öo]r[üu]\s+bulunamad[iı]',
         r'Toplam\s+0\s+adet\s+Video\s+Prompt\s+klas[öo]r[üu]\s+bulundu',
         r'bulunamad[iı]',
@@ -864,6 +1176,10 @@ def _detect_gorsel_klonlama_error_type(logs_snapshot: list) -> str:
         r'connection.*error|network.*error|bağlantı.*hata',
         r'request.*failed|istek.*başarısız',
         r'http.*error|ssl.*error',
+        r'pixverse.*kimlik.*doğrulama|pixverse.*auth',
+        r'oturum.*doğrulanamadı|login.*required',
+        r'credits?.*insufficient|kredi.*yetersiz',
+        r'task.*wait.*timeout|deadline.*exceeded|zaman.*aşımı',
     ]
     for line in reversed(logs_snapshot or []):
         clean = _strip_log_prefix(line)
@@ -1303,7 +1619,12 @@ def cleanup_state_files():
     try:
         files_cleaned = []
         # 1. State dosyaları
-        for fpath, fname in [(STATE_FILE, "STATE.json"), (DONE_FILE, "DONE.json"), (FAILED_FILE, "FAILED.json")]:
+        for fpath, fname in [
+            (STATE_FILE, "STATE.json"),
+            (DONE_FILE, "DONE.json"),
+            (FAILED_FILE, "FAILED.json"),
+            (GORSEL_OLUSTUR_STATE_PATH, "gorsel_olustur_state.json"),
+        ]:
             if os.path.exists(fpath):
                 os.remove(fpath)
                 files_cleaned.append(fname)
@@ -1913,6 +2234,302 @@ def _log_generated_video_output_dir_fix(summary: dict):
         log(f"[WARN] Video klasör düzenleme uyarısı: {err}")
 
 
+def _social_media_compat_sort_key(value: str):
+    parts = re.split(r'(\d+)', os.path.basename(str(value or '')))
+    return [int(part) if part.isdigit() else part.casefold() for part in parts]
+
+
+def _probe_video_for_social_media_compat(video_path: str) -> dict:
+    out = {
+        "ok": False,
+        "width": 0,
+        "height": 0,
+        "video_codec": "",
+        "audio_codec": "",
+        "pix_fmt": "",
+        "has_audio": False,
+    }
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "stream=codec_type,codec_name,width,height,pix_fmt",
+                "-of", "json",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return out
+        data = json.loads(result.stdout or "{}")
+        streams = data.get("streams") or []
+        video_stream = next((s for s in streams if str(s.get("codec_type")).lower() == "video"), None)
+        audio_stream = next((s for s in streams if str(s.get("codec_type")).lower() == "audio"), None)
+        if not isinstance(video_stream, dict):
+            return out
+        out["width"] = int(video_stream.get("width") or 0)
+        out["height"] = int(video_stream.get("height") or 0)
+        out["video_codec"] = str(video_stream.get("codec_name") or "").strip().lower()
+        out["pix_fmt"] = str(video_stream.get("pix_fmt") or "").strip().lower()
+        out["has_audio"] = isinstance(audio_stream, dict)
+        out["audio_codec"] = str((audio_stream or {}).get("codec_name") or "").strip().lower()
+        out["ok"] = True
+    except Exception:
+        return out
+    return out
+
+
+def _list_social_media_source_video_candidates(video_root: str) -> list:
+    supported_exts = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
+    root = str(video_root or "").strip()
+    if not root or not os.path.isdir(root):
+        return []
+
+    try:
+        entries = os.listdir(root)
+    except Exception:
+        return []
+
+    subdirs = sorted(
+        [os.path.join(root, name) for name in entries if os.path.isdir(os.path.join(root, name))],
+        key=_social_media_compat_sort_key,
+    )
+
+    out = []
+    if subdirs:
+        for subdir in subdirs:
+            try:
+                files = [
+                    os.path.join(subdir, name)
+                    for name in sorted(os.listdir(subdir), key=_social_media_compat_sort_key)
+                    if os.path.isfile(os.path.join(subdir, name))
+                    and str(name).lower().endswith(supported_exts)
+                ]
+            except Exception:
+                files = []
+            if files:
+                out.append(files[0])
+        return out
+
+    for name in sorted(entries, key=_social_media_compat_sort_key):
+        full = os.path.join(root, name)
+        if os.path.isfile(full) and str(name).lower().endswith(supported_exts):
+            out.append(full)
+    return out
+
+
+def _normalize_single_video_for_social_media(video_path: str, target_width: int, target_height: int, has_audio: bool) -> tuple[bool, str, str]:
+    video_path = str(video_path or "").strip()
+    if not video_path or not os.path.isfile(video_path):
+        return False, "", "Video dosyası bulunamadı"
+
+    folder = os.path.dirname(video_path)
+    stem, ext = os.path.splitext(video_path)
+    target_path = stem + ".mp4"
+    backup_path = video_path + ".sourcebak"
+    temp_path = os.path.join(folder, f"__sm_ready_tmp__{int(time.time() * 1000)}_{os.getpid()}.mp4")
+
+    vf = (
+        f"fps=30,"
+        f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+        f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black,"
+        f"setsar=1"
+    )
+
+    if has_audio:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "48000",
+            "-movflags", "+faststart",
+            temp_path,
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-f", "lavfi",
+            "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "48000",
+            "-shortest",
+            "-movflags", "+faststart",
+            temp_path,
+        ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if result.returncode != 0 or not os.path.isfile(temp_path) or os.path.getsize(temp_path) <= 0:
+            stderr = (result.stderr or "").strip().splitlines()
+            detail = stderr[-1].strip() if stderr else "ffmpeg dönüştürme hatası"
+            _cleanup_file_quiet(temp_path)
+            return False, "", detail
+
+        if os.path.abspath(target_path) == os.path.abspath(video_path):
+            if os.path.exists(backup_path):
+                _cleanup_file_quiet(video_path)
+            else:
+                os.replace(video_path, backup_path)
+            os.replace(temp_path, target_path)
+        else:
+            if os.path.exists(backup_path):
+                _cleanup_file_quiet(video_path)
+            else:
+                os.replace(video_path, backup_path)
+            if os.path.exists(target_path):
+                target_backup = target_path + ".sourcebak"
+                if os.path.exists(target_backup):
+                    _cleanup_file_quiet(target_path)
+                else:
+                    os.replace(target_path, target_backup)
+            os.replace(temp_path, target_path)
+
+        return True, target_path, ""
+    except Exception as e:
+        _cleanup_file_quiet(temp_path)
+        return False, "", str(e)
+
+
+def _prepare_videos_for_social_media_compat(video_root: str) -> dict:
+    summary = {
+        "video_root": str(video_root or "").strip(),
+        "candidate_count": 0,
+        "converted": [],
+        "skipped": [],
+        "errors": [],
+    }
+    candidates = _list_social_media_source_video_candidates(video_root)
+    summary["candidate_count"] = len(candidates)
+
+    for video_path in candidates:
+        probe = _probe_video_for_social_media_compat(video_path)
+        width = int(probe.get("width") or 0)
+        height = int(probe.get("height") or 0)
+        is_portrait = height > width if (width > 0 and height > 0) else True
+        target_width, target_height = (1080, 1920) if is_portrait else (1920, 1080)
+
+        ext = os.path.splitext(video_path)[1].strip().lower()
+        video_codec = str(probe.get("video_codec") or "").strip().lower()
+        audio_codec = str(probe.get("audio_codec") or "").strip().lower()
+        pix_fmt = str(probe.get("pix_fmt") or "").strip().lower()
+        has_audio = bool(probe.get("has_audio"))
+
+        needs_fix = (
+            not probe.get("ok")
+            or ext != ".mp4"
+            or video_codec != "h264"
+            or audio_codec != "aac"
+            or not pix_fmt.startswith("yuv420p")
+            or width != target_width
+            or height != target_height
+            or not has_audio
+        )
+
+        if not needs_fix:
+            summary["skipped"].append(video_path)
+            continue
+
+        ok, normalized_path, detail = _normalize_single_video_for_social_media(
+            video_path,
+            target_width=target_width,
+            target_height=target_height,
+            has_audio=has_audio,
+        )
+        if ok and normalized_path:
+            summary["converted"].append((video_path, normalized_path))
+        else:
+            summary["errors"].append(f"{os.path.basename(video_path)}: {detail or 'Dönüştürülemedi'}")
+
+    return summary
+
+
+def _log_social_media_compat_prep(summary: dict):
+    if not isinstance(summary, dict):
+        return
+
+    converted = summary.get("converted") or []
+    skipped = summary.get("skipped") or []
+    errors = summary.get("errors") or []
+
+    if converted:
+        labels = ", ".join(os.path.basename(dst) for _, dst in converted[:5])
+        extra = "" if len(converted) <= 5 else f" (+{len(converted) - 5})"
+        log(f"[INFO] Sosyal medya uyumluluğu için videolar dönüştürüldü: {labels}{extra}")
+    elif skipped and summary.get("candidate_count", 0) > 0:
+        log("[INFO] Sosyal medya için seçilen videolar zaten uyumlu formatta.")
+
+    for err in errors[:5]:
+        log(f"[WARN] Sosyal medya video uyumlulaştırma uyarısı: {err}")
+
+
+def _resolve_social_media_launch_context_early() -> dict:
+    s = st.session_state.get("settings", {}) if isinstance(st.session_state.get("settings", {}), dict) else {}
+    sm_dir = (s.get("sosyal_medya_dir") or r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Sosyal Medya Paylaşım").strip()
+    script_path = (s.get("sosyal_medya_script") or os.path.join(sm_dir, "sosyal_medya_paylasım.py")).strip()
+    kaynak_secim_path = os.path.join(sm_dir, "video_kaynak_secim.txt")
+    video_kaynak_path = os.path.join(sm_dir, "video_kaynak.txt")
+
+    kaynak_secim = ""
+    try:
+        if os.path.exists(kaynak_secim_path):
+            with open(kaynak_secim_path, "r", encoding="utf-8", errors="ignore") as f:
+                kaynak_secim = f.read().strip()
+    except Exception:
+        kaynak_secim = ""
+
+    if not kaynak_secim:
+        kaynak_secim = st.session_state.get("sm_video_kaynak_secim", "Link")
+
+    kaynak_secim = _sm_normalize_kaynak_secim(kaynak_secim)
+
+    if kaynak_secim == "🎬 Toplu Video Montaj":
+        source_root = (s.get("toplu_video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Toplu Montaj").strip()
+    elif kaynak_secim == "🖼️ Görsel Oluştur":
+        source_root = (s.get("video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
+    elif kaynak_secim == "🎞️ Video Ekle":
+        source_root = (s.get("added_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Eklenen Video").strip()
+    elif kaynak_secim == "🎞️ Video Montaj":
+        source_root = (s.get("video_montaj_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Montaj").strip()
+    elif kaynak_secim == "Link":
+        source_root = (s.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
+    else:
+        source_root = (s.get("sosyal_medya_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
+
+    try:
+        os.makedirs(sm_dir, exist_ok=True)
+        with open(video_kaynak_path, "w", encoding="utf-8") as f:
+            f.write(source_root)
+    except Exception:
+        pass
+
+    return {
+        "script_path": script_path,
+        "source_selection": kaynak_secim,
+        "source_root": source_root,
+        "video_kaynak_path": video_kaynak_path,
+    }
+
+
 def _prepare_youtube_link_output(append_mode: bool = False) -> str:
     target_path = (st.session_state.settings.get("links_file") or "").strip()
     if append_mode:
@@ -2430,7 +3047,7 @@ if "_remap_numeric_selection_text" not in globals():
 
 
 if "_prepare_mevcut_video_runner_dirs" not in globals():
-    def _prepare_mevcut_video_runner_dirs(video_items: list, temp_prefix: str = "video_montaj") -> tuple[str, str, dict]:
+    def _prepare_mevcut_video_runner_dirs(video_items: list, temp_prefix: str = "video_montaj", force_copy: bool = False) -> tuple[str, str, dict]:
         existing_items = []
         token_remap = {}
         next_token = 1
@@ -2438,14 +3055,17 @@ if "_prepare_mevcut_video_runner_dirs" not in globals():
         for item in (video_items or []):
             token = str(item.get("token") or "").strip()
             path = (item.get("path") or "").strip()
-            if not token or not item.get("exists") or not path or not os.path.isfile(path):
+            if token and item.get("exists") and path and os.path.isfile(path):
+                token_remap[token] = str(next_token)
+                next_token += 1
+            if not item.get("exists") or not path or not os.path.isfile(path):
                 continue
-            token_remap[token] = str(next_token)
-            next_token += 1
             existing_items.append(item)
 
         has_download_source = any((item.get("source_kind") == "download") for item in existing_items)
-        if not has_download_source:
+        if not existing_items:
+            return "", "", token_remap
+        if not force_copy and not has_download_source:
             return "", "", token_remap
 
         temp_root = os.path.join(CONTROL_DIR, f"{temp_prefix}_sources_{int(time.time() * 1000)}")
@@ -2483,7 +3103,10 @@ if "_prepare_mevcut_video_runner_dirs" not in globals():
                 log(f"[WARN] Geçici montaj kaynağı hazırlanamadı: {src_path} -> {e}")
 
         if copied_count:
-            log(f"[INFO] İndirilen videolar montaj kaynağına dahil edildi: {copied_count} dosya hazırlandı.")
+            if force_copy and not has_download_source:
+                log(f"[INFO] Montaj kaynağı seçime göre hazırlandı: {copied_count} dosya geçici kaynak klasörüne kopyalandı.")
+            else:
+                log(f"[INFO] İndirilen videolar montaj kaynağına dahil edildi: {copied_count} dosya hazırlandı.")
         return normal_root, clone_root, token_remap
 
 
@@ -2980,6 +3603,37 @@ if "start_toplu_video_bg" not in globals():
         config_path = _tv_bootstrap_write_config(config_payload)
         return bg_start(owner, "toplu_video", runner_path, args=[config_path])
 
+
+if "start_sosyal_medya_bg" not in globals():
+
+    def start_sosyal_medya_bg(owner: str = "single") -> bool:
+        ctx = _resolve_social_media_launch_context_early()
+        script_path = (ctx.get("script_path") or "").strip()
+
+        if not script_path or not os.path.exists(script_path):
+            st.session_state.status["sosyal_medya"] = "error"
+            log(f"[ERROR] Sosyal medya script bulunamadı: {script_path}")
+            return False
+
+        source_selection = str(ctx.get("source_selection") or "").strip()
+        source_root = str(ctx.get("source_root") or "").strip()
+
+        if source_selection in {"Video", "🖼️ Görsel Oluştur"} and source_root:
+            log(f"[INFO] Sosyal medya ön hazırlığı: {source_selection} kaynağı için video uyumluluğu kontrol ediliyor...")
+            compat_summary = _prepare_videos_for_social_media_compat(source_root)
+            _log_social_media_compat_prep(compat_summary)
+            if (
+                compat_summary.get("candidate_count", 0) > 0
+                and not compat_summary.get("converted")
+                and not compat_summary.get("skipped")
+                and compat_summary.get("errors")
+            ):
+                st.session_state.status["sosyal_medya"] = "error"
+                log("[ERROR] Sosyal medya için uygun video hazırlanamadı. Paylaşım başlatılmadı.")
+                return False
+
+        return bg_start(owner, "sosyal_medya", script_path)
+
 # --- PIXVERSE EARLY BOOTSTRAP ---
 if "start_pixverse_bg" not in globals():
 
@@ -3102,9 +3756,10 @@ if "start_pixverse_bg" not in globals():
     def start_pixverse_bg(owner: str) -> bool:
         overridden = False
         extra_args = []
-        if _should_use_gorsel_motion_prompts():
+        prompt_source = _resolve_video_prompt_source_for_generation()
+        if prompt_source.get("kind") == "gorsel_motion":
             overridden = True
-            extra_args = ["--prompt-dir", GORSEL_HAREKET_PROMPT_DIR, "--ref-image-dir", GORSEL_HAREKET_REFERANS_DIR]
+            extra_args = ["--prompt-dir", prompt_source.get("prompt_dir", GORSEL_HAREKET_PROMPT_DIR), "--ref-image-dir", prompt_source.get("ref_image_dir", GORSEL_HAREKET_REFERANS_DIR)]
             st.session_state.pixverse_prompt_override_meta = {
                 "is_gorsel_override": True,
                 "original_settings_prompt_dir": st.session_state.settings.get("prompt_dir", ""),
@@ -3113,16 +3768,17 @@ if "start_pixverse_bg" not in globals():
             # settings.local.json'a dogrudan yaz (script modul-level okumasi icin)
             try:
                 _s = dict(st.session_state.settings)
-                _s["prompt_dir"] = GORSEL_HAREKET_PROMPT_DIR
-                _s["gorsel_klonlama_dir"] = GORSEL_HAREKET_REFERANS_DIR
+                _s["prompt_dir"] = prompt_source.get("prompt_dir", GORSEL_HAREKET_PROMPT_DIR)
+                _s["gorsel_klonlama_dir"] = prompt_source.get("ref_image_dir", GORSEL_HAREKET_REFERANS_DIR)
                 import json as _json
                 with open(SETTINGS_PATH, "r", encoding="utf-8") as _rf:
                     _current = _json.load(_rf)
-                _current["prompt_dir"] = GORSEL_HAREKET_PROMPT_DIR
-                _current["gorsel_klonlama_dir"] = GORSEL_HAREKET_REFERANS_DIR
+                _current["prompt_dir"] = prompt_source.get("prompt_dir", GORSEL_HAREKET_PROMPT_DIR)
+                _current["gorsel_klonlama_dir"] = prompt_source.get("ref_image_dir", GORSEL_HAREKET_REFERANS_DIR)
                 with open(SETTINGS_PATH, "w", encoding="utf-8") as _wf:
                     _json.dump(_current, _wf, ensure_ascii=False, indent=2)
-                log(f"[INFO] Görsel hareketlendirme promptları aktif. PROMPT_ROOT override: {GORSEL_HAREKET_PROMPT_DIR}")
+                log(f"[INFO] Video prompt kaynağı -> Görsel Hareketlendirme Prompt ({prompt_source.get('reason', 'state_active')})")
+                log(f"[INFO] PROMPT_ROOT override: {prompt_source.get('prompt_dir', GORSEL_HAREKET_PROMPT_DIR)}")
             except Exception as _e:
                 log(f"[WARN] settings.json prompt_dir yazilamadi: {_e}")
 
@@ -3355,6 +4011,20 @@ if st.session_state.get("batch_mode", False):
         if success:
             st.session_state.status[node] = node_status
 
+            # görsel_klonlama kısmi tamamlandı → batch DURDUR
+            # Kullanıcı düzenleme yapıp Devam Et'e basacak; aynı adımdan tekrar denenecek.
+            if node == "gorsel_klonlama" and node_status == "partial":
+                cur_logs_partial = list(st.session_state.logs)
+                gk_err_partial = _detect_gorsel_klonlama_error_type(cur_logs_partial)
+                if gk_err_partial == "api":
+                    st.session_state.batch_resume_reason = "⚠️ API / bağlantı hatası (kısmi sonuç) — Görsel Klonla adımından tekrar denenecek."
+                    log("[INFO] Görsel Klonla kısmi hata: API/bağlantı sorunu tespit edildi → Görsel Klonla adımından tekrar başlanacak.")
+                else:
+                    st.session_state.batch_resume_reason = "⚠️ Bazı görseller klonlanamadı — Görsel Klonla adımından tekrar denenecek."
+                    log("[INFO] Görsel Klonla kısmi tamamlandı → batch durduruluyor, Görsel Klonla adımından tekrar başlanacak.")
+                _stop_batch_with_resume("gorsel_klonlama")
+                st.rerun()
+
             # pixverse kısmi tamamlandı → batch DURDUR, video_montaj'a geçme
             # Kullanıcı düzeltme yapıp Devam Et'e basacak; pixverse skript zaten olanları atlar
             if node == "pixverse" and node_status == "partial":
@@ -3420,7 +4090,15 @@ if st.session_state.get("batch_mode", False):
                         st.session_state.status[next_node] = "running"
                         if next_node == "pixverse":
                             _reset_pixverse_retry_state_if_needed()
-                        if not (start_analyze_bg("batch") if next_node == "analyze" else bg_start("batch", next_node, next_script)):
+                        if next_node == "pixverse":
+                            _started_ok = start_pixverse_bg("batch")
+                        elif next_node == "sosyal_medya":
+                            _started_ok = start_sosyal_medya_bg("batch")
+                        elif next_node == "analyze":
+                            _started_ok = start_analyze_bg("batch")
+                        else:
+                            _started_ok = bg_start("batch", next_node, next_script)
+                        if not _started_ok:
                             st.session_state.batch_mode = False; st.session_state.batch_queue_idx = 0; cleanup_flags()
                     else:
                         st.session_state.batch_queue_idx = new_idx + 1
@@ -3495,6 +4173,8 @@ if st.session_state.get("batch_mode", False):
                 if node_key == "pixverse":
                     _reset_pixverse_retry_state_if_needed()
                     _started_ok = start_pixverse_bg("batch")
+                elif node_key == "sosyal_medya":
+                    _started_ok = start_sosyal_medya_bg("batch")
                 else:
                     _started_ok = start_analyze_bg("batch") if node_key == "analyze" else bg_start("batch", node_key, script)
                 if not _started_ok:
@@ -3542,7 +4222,7 @@ if is_single_active and not st.session_state.get("batch_mode", False):
             elif step == "prompt_duzeltme": _single_started = bg_start("single", "prompt_duzeltme", st.session_state.settings["prompt_duzeltme_script"])
             elif step == "video_montaj": _single_started = start_video_montaj_bg("single")
             elif step == "toplu_video": _single_started = start_toplu_video_bg("single")
-            elif step == "sosyal_medya": _single_started = bg_start("single", "sosyal_medya", st.session_state.settings["sosyal_medya_script"])
+            elif step == "sosyal_medya": _single_started = start_sosyal_medya_bg("single")
             if step and not _single_started:
                 st.session_state.single_mode = False; st.session_state.single_step = None
                 st.session_state.durum_ozeti_suppress = False
@@ -9416,6 +10096,54 @@ def gorsel_klonla_dialog():
         st.session_state.ek_dialog_open = "gorsel_klonla"
         st.rerun()
 
+    mevcut_klon_model = _normalize_clone_image_model(
+        st.session_state.settings.get("gorsel_klonlama_model") or st.session_state.settings.get("gorsel_model"),
+        DEFAULT_GORSEL_KLONLAMA_MODEL,
+    )
+    secili_klon_model = st.selectbox(
+        "Klonlama Modeli",
+        PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS,
+        index=PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS.index(mevcut_klon_model),
+        key="gklonla_model_select",
+        help="Görsel Klonla adımı PixVerse CLI image-to-image modunda bu modeli kullanır.",
+    )
+    mevcut_klon_kalite = _normalize_image_quality(
+        st.session_state.settings.get("gorsel_klonlama_kalitesi") or st.session_state.settings.get("gorsel_kalitesi"),
+        "Standart",
+    )
+    mevcut_klon_boyut = _normalize_image_aspect_ratio(
+        st.session_state.settings.get("gorsel_klonlama_boyutu") or st.session_state.settings.get("gorsel_boyutu"),
+        "16:9",
+    )
+    kalite_col, boyut_col = st.columns(2)
+    with kalite_col:
+        secili_klon_kalite = st.selectbox(
+            "Klonlama Kalitesi",
+            PIXVERSE_IMAGE_QUALITY_OPTIONS,
+            index=PIXVERSE_IMAGE_QUALITY_OPTIONS.index(mevcut_klon_kalite),
+            key="gklonla_kalite_select",
+            help="Standart / Yüksek / Maksimum kalite tercihi seçin.",
+        )
+    with boyut_col:
+        secili_klon_boyut = st.selectbox(
+            "Klonlama Oranı",
+            PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS,
+            index=PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS.index(mevcut_klon_boyut),
+            key="gklonla_boyut_select",
+            help="Üretilecek klon görsel için hedef oranı seçin.",
+        )
+    if (
+        secili_klon_model != mevcut_klon_model
+        or secili_klon_kalite != mevcut_klon_kalite
+        or secili_klon_boyut != mevcut_klon_boyut
+    ):
+        st.session_state.settings["gorsel_klonlama_model"] = secili_klon_model
+        st.session_state.settings["gorsel_klonlama_kalitesi"] = secili_klon_kalite
+        st.session_state.settings["gorsel_klonlama_boyutu"] = secili_klon_boyut
+        save_settings(st.session_state.settings)
+        st.session_state.ek_dialog_open = "gorsel_klonla"
+        st.rerun()
+
     # Seçime göre aktif dizin ve klasörler
     if yeni_kaynak == "gorsel_olustur":
         aktif_dir = gorsel_olustur_dir
@@ -10394,6 +11122,62 @@ _VIDEO_AYAR_MODEL_HARITA = {
             "sora-2-pro": ["720p", "1080p"],
         },
         "durations": [4, 8, 12],
+        "aspect_ratios": ["16:9", "9:16"],
+        "ses": True,
+    },
+    "Kling 3.0": {
+        "script_key": "kling30_script",
+        "default_model": "kling-3.0-standard",
+        "models": ["kling-3.0-standard"],
+        "quality_map": {
+            "kling-3.0-standard": ["720p"],
+        },
+        "durations": list(range(3, 16)),
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "ses": True,
+    },
+    "Kling O3": {
+        "script_key": "klingo3_script",
+        "default_model": "kling-o3-standard",
+        "models": ["kling-o3-standard"],
+        "quality_map": {
+            "kling-o3-standard": ["720p"],
+        },
+        "durations": list(range(3, 16)),
+        "aspect_ratios": ["16:9", "9:16", "1:1"],
+        "ses": True,
+    },
+    "Seedance 2.0": {
+        "script_key": "seedance20_script",
+        "default_model": "seedance-2.0-standard",
+        "models": ["seedance-2.0-standard"],
+        "quality_map": {
+            "seedance-2.0-standard": ["480p", "720p"],
+        },
+        "durations": list(range(4, 16)),
+        "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        "ses": True,
+    },
+    "Veo 3.1 Standard": {
+        "script_key": "veo31_script",
+        "default_model": "veo-3.1-standard",
+        "models": ["veo-3.1-standard"],
+        "quality_map": {
+            "veo-3.1-standard": ["720p", "1080p"],
+        },
+        "durations": [4, 6, 8],
+        "aspect_ratios": ["16:9", "9:16"],
+        "ses": True,
+    },
+    "Grok": {
+        "script_key": "grok_script",
+        "default_model": "grok-imagine",
+        "models": ["grok-imagine"],
+        "quality_map": {
+            "grok-imagine": ["480p", "720p"],
+        },
+        "durations": list(range(1, 16)),
+        "aspect_ratios": ["16:9", "4:3", "1:1", "9:16", "3:4", "3:2", "2:3"],
         "ses": True,
     },
     "PixVerse V6": {
@@ -10404,26 +11188,7 @@ _VIDEO_AYAR_MODEL_HARITA = {
             "v6": ["360p", "540p", "720p", "1080p"],
         },
         "durations": list(range(1, 16)),
-        "ses": True,
-    },
-    "Veo 3.1 Standard": {
-        "script_key": "veo31_script",
-        "default_model": "veo-3.1-standard",
-        "models": ["veo-3.1-standard"],
-        "quality_map": {
-            "veo-3.1-standard": ["360p", "540p", "720p", "1080p"],
-        },
-        "durations": [4, 6, 8],
-        "ses": True,
-    },
-    "Grok": {
-        "script_key": "grok_script",
-        "default_model": "grok-imagine",
-        "models": ["grok-imagine"],
-        "quality_map": {
-            "grok-imagine": ["360p", "540p", "720p"],
-        },
-        "durations": [5, 8, 10, 15],
+        "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "3:2", "2:3", "21:9"],
         "ses": True,
     },
     "PixVerse Cinematic": {
@@ -10434,6 +11199,7 @@ _VIDEO_AYAR_MODEL_HARITA = {
             "pixverse-c1": ["360p", "540p", "720p", "1080p"],
         },
         "durations": list(range(1, 16)),
+        "aspect_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "3:2", "2:3"],
         "ses": True,
     },
 }
@@ -10783,9 +11549,10 @@ def _cleanup_pixverse_prompt_override():
 def start_pixverse_bg(owner: str) -> bool:
     overridden = False
     extra_args = []
-    if _should_use_gorsel_motion_prompts():
+    prompt_source = _resolve_video_prompt_source_for_generation()
+    if prompt_source.get("kind") == "gorsel_motion":
         overridden = True
-        extra_args = ["--prompt-dir", GORSEL_HAREKET_PROMPT_DIR, "--ref-image-dir", GORSEL_HAREKET_REFERANS_DIR]
+        extra_args = ["--prompt-dir", prompt_source.get("prompt_dir", GORSEL_HAREKET_PROMPT_DIR), "--ref-image-dir", prompt_source.get("ref_image_dir", GORSEL_HAREKET_REFERANS_DIR)]
         st.session_state.pixverse_prompt_override_meta = {
             "is_gorsel_override": True,
             "original_settings_prompt_dir": st.session_state.settings.get("prompt_dir", ""),
@@ -10796,11 +11563,12 @@ def start_pixverse_bg(owner: str) -> bool:
             import json as _json
             with open(SETTINGS_PATH, "r", encoding="utf-8") as _rf:
                 _current = _json.load(_rf)
-            _current["prompt_dir"] = GORSEL_HAREKET_PROMPT_DIR
-            _current["gorsel_klonlama_dir"] = GORSEL_HAREKET_REFERANS_DIR
+            _current["prompt_dir"] = prompt_source.get("prompt_dir", GORSEL_HAREKET_PROMPT_DIR)
+            _current["gorsel_klonlama_dir"] = prompt_source.get("ref_image_dir", GORSEL_HAREKET_REFERANS_DIR)
             with open(SETTINGS_PATH, "w", encoding="utf-8") as _wf:
                 _json.dump(_current, _wf, ensure_ascii=False, indent=2)
-            log(f"[INFO] Görsel hareketlendirme promptları aktif. PROMPT_ROOT override: {GORSEL_HAREKET_PROMPT_DIR}")
+            log(f"[INFO] Video prompt kaynağı -> Görsel Hareketlendirme Prompt ({prompt_source.get('reason', 'state_active')})")
+            log(f"[INFO] PROMPT_ROOT override: {prompt_source.get('prompt_dir', GORSEL_HAREKET_PROMPT_DIR)}")
         except Exception as _e:
             log(f"[WARN] settings.json prompt_dir yazilamadi: {_e}")
         
@@ -10908,8 +11676,8 @@ def video_ayarlari_dialog():
     kalite_idx = kalite_listesi.index(mevcut_kalite) if mevcut_kalite in kalite_listesi else len(kalite_listesi) - 1
     secilen_kalite = st.selectbox("🎯 Kalite", kalite_listesi, index=kalite_idx, key="va_kalite")
 
-    boyut_secenekleri = ["16:9", "9:16"]
-    mevcut_boyut = mevcut.get("aspect_ratio", "16:9")
+    boyut_secenekleri = harita.get("aspect_ratios", ["16:9", "9:16"])
+    mevcut_boyut = mevcut.get("aspect_ratio", boyut_secenekleri[0] if boyut_secenekleri else "16:9")
     boyut_idx = boyut_secenekleri.index(mevcut_boyut) if mevcut_boyut in boyut_secenekleri else 0
     secilen_boyut = st.selectbox("📏 Video Boyutu", boyut_secenekleri, index=boyut_idx, key="va_boyut")
 
@@ -10956,7 +11724,8 @@ def video_ayarlari_dialog():
                         log("[INFO] Video üretimi tüm promptlar için ayarlandı.")
                     log(f"[INFO] Video ayarları kaydedildi: {secilen_model} → {secilen_boyut}, {secilen_sure_int}s, {secilen_kalite}, ses={secilen_ses}, model={secilen_alt_model}")
                     st.success("✅ Ayarlar kaydedildi! Video Üret dediğinizde seçtiğiniz promptlar kullanılacak.")
-                    time.sleep(1.5)
+                    st.session_state["va_saved"] = True
+                    st.session_state.ek_dialog_open = "video_ayarlari"
                     st.rerun()
                 else:
                     st.error("❌ Ayarlar kaydedilemedi!")
@@ -11198,7 +11967,7 @@ with left_col:
         "youtube_link": "📺 YouTube linkleri hazırlanıyor...",
         "download": "⬇️ Video İndiriliyor...",
         "gorsel_analiz": "🖼️ Görsel Analiz Yapılıyor...",
-        "gorsel_klonlama": "🎨 Görsel Klonlanıyor...",
+        "gorsel_klonlama": f"🎨 {st.session_state.settings.get('gorsel_klonlama_model', DEFAULT_GORSEL_KLONLAMA_MODEL)} ile Görsel Klonlanıyor...",
         "gorsel_olustur": f"🖼️ {st.session_state.settings.get('gorsel_model', 'Nano Banana 2')} Görsel Oluşturuluyor...",
         "prompt_duzeltme": "✏️ Prompt Düzeltiliyor...",
         "video_montaj": "🎞️ Video Montaj Yapılıyor...",
@@ -11248,7 +12017,8 @@ with left_col:
         secs = st.session_state.ek_batch_secimler
         queue = []
         aktif_prompt_kaynagi = _get_prompt_runtime_source_mode()
-        gorsel_motion_prompt_aktif = secs.get("gorsel_olustur", False) and _should_use_gorsel_motion_prompts()
+        prompt_source = _resolve_video_prompt_source_for_generation()
+        gorsel_motion_prompt_aktif = secs.get("gorsel_olustur", False) and prompt_source.get("kind") == "gorsel_motion"
         if secs.get("video_indir", True) and not gorsel_motion_prompt_aktif and aktif_prompt_kaynagi == PROMPT_SOURCE_LINK and _count_prompt_links() > 0:    queue.append("download")
         if secs.get("gorsel_analiz", False): queue.append("gorsel_analiz")
         if secs.get("gorsel_klonla", False): queue.append("gorsel_klonlama")
@@ -11535,10 +12305,25 @@ with middle_col:
         top = _TOP[nid]; running = (s == "running")
         top_strip = ""
         if top == "rainbow":
-            top_strip = '<div style="position:absolute; top:-1px; left:0; width:100%; height:3px; background:linear-gradient(to right, red, orange, yellow, #4ade80, #38bdf8, #a855f7); border-radius:14px 14px 0 0;"></div>'
-            border_css = "border-top:0px;"
+            _card_grad_id = f"card_rbw_{nid}"
+            top_strip = (
+                f'<svg viewBox="0 0 330 8" preserveAspectRatio="none" '
+                f'style="position:absolute;top:-1px;left:-1px;width:calc(100% + 2px);height:8px;overflow:hidden;pointer-events:none;">'
+                f'<defs><linearGradient id="{_card_grad_id}" x1="0%" y1="0%" x2="100%" y2="0%">'
+                f'<stop offset="0%" stop-color="#ff0000"/>'
+                f'<stop offset="18%" stop-color="#ff8800"/>'
+                f'<stop offset="36%" stop-color="#ffff00"/>'
+                f'<stop offset="54%" stop-color="#4ade80"/>'
+                f'<stop offset="76%" stop-color="#38bdf8"/>'
+                f'<stop offset="100%" stop-color="#a855f7"/>'
+                f'</linearGradient></defs>'
+                f'<path d="M1.25 14 A12.75 12.75 0 0 1 14 1.25 L316 1.25 A12.75 12.75 0 0 1 328.75 14" '
+                f'stroke="url(#{_card_grad_id})" stroke-width="2.5" fill="none" stroke-linecap="round"/>'
+                f'</svg>'
+            )
+            border_css = "background:rgba(15,23,42,0.82);border:1px solid rgba(255,255,255,0.08);border-top:0;"
         else:
-            border_css = f"border-top:2.5px solid {top};"
+            border_css = f"background:rgba(15,23,42,0.82);border:1px solid rgba(255,255,255,0.08);border-top:2.5px solid {top};"
 
         p1 = "animation:wfpulse 1.8s ease-in-out infinite;" if running else ""
         p2 = "animation:dotpulse 1.2s ease-in-out infinite;" if running else ""
@@ -11558,8 +12343,7 @@ with middle_col:
             f'background:{dot_c};box-shadow:{dot_shadow};{dot_anim}"></div>'
         )
         r  = (
-            f'<div style="position:relative;background:rgba(15,23,42,0.82);border:1px solid rgba(255,255,255,0.08);' +
-            f'{border_css}border-radius:14px;padding:14px 13px 12px;overflow:hidden;' +
+            f'<div style="position:relative;{border_css}border-radius:14px;padding:14px 13px 12px;overflow:hidden;' +
             f'opacity:{op};box-shadow:0 4px 18px rgba(0,0,0,0.4);min-height:96px;{p1}">' +
             top_strip +
             ready_dot +
@@ -11586,7 +12370,7 @@ with middle_col:
             c = "url(#rbw)" if active else "#2d3748"
         else:
             c = color if active else "#2d3748"
-        ds = "stroke-dasharray:8,6;animation:dash-flow 8s linear infinite;" if active else "stroke-dasharray:5,5;opacity:0.25;"
+        ds = f"stroke-dasharray:8,6;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
         x1, x2 = ("56%", "44%") if direction == "right-to-left" else ("44%", "56%")
         return (
             f'<div style="width:100%;height:42px;overflow:visible;">'
@@ -11599,23 +12383,29 @@ with middle_col:
         if not visible:
             return f'<div style="min-height:82px;"></div>'
         if color == "rainbow":
-            # CSS mask ile kesik cizgi - SVG gradient stroke horizontal cizgide calismiyor
-            rbw_grad = "linear-gradient(to right, #ff0000, #ff8800, #ffff00, #4ade80, #38bdf8, #a855f7)"
-            if active:
-                mask = "repeating-linear-gradient(to right, black 0px, black 10px, transparent 10px, transparent 18px)"
-                anim = "animation:dash-mask-h 0.8s linear infinite;"
-                op = "1"
-            else:
-                mask = "repeating-linear-gradient(to right, black 0px, black 6px, transparent 6px, transparent 12px)"
-                anim = ""
-                op = "0.25"
+            grad_id = f"rbw_h_{int(_wf_anim_now * 1000)}_{direction.replace('-', '_')}"
+            defs = (
+                f'<defs><linearGradient id="{grad_id}" x1="0%" y1="0%" x2="100%" y2="0%">'
+                f'<stop offset="0%" stop-color="#ff0000"/>'
+                f'<stop offset="18%" stop-color="#ff8800"/>'
+                f'<stop offset="36%" stop-color="#ffff00"/>'
+                f'<stop offset="54%" stop-color="#4ade80"/>'
+                f'<stop offset="76%" stop-color="#38bdf8"/>'
+                f'<stop offset="100%" stop-color="#a855f7"/>'
+                f'</linearGradient></defs>'
+            )
+            c = f"url(#{grad_id})" if active else "#2d3748"
+            ds = f"stroke-dasharray:8,6;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
+            x1, x2 = ("0", "100%") if direction == "left-to-right" else ("100%", "0")
             return (
                 f'<div style="display:flex;align-items:center;justify-content:center;min-height:82px;padding:0 6px;">'
-                f'<div style="width:100%;height:3px;background:{rbw_grad};opacity:{op};border-radius:2px;'
-                f"-webkit-mask-image:{mask};mask-image:{mask};{anim}\"></div></div>"
+                f'<svg width="100%" height="14" style="overflow:visible;display:block;transform:translateZ(0);shape-rendering:geometricPrecision;">'
+                f'{defs}'
+                f'<line x1="{x1}" y1="7" x2="{x2}" y2="7" stroke="{c}" stroke-width="2.5" stroke-linecap="round" style="{ds}"/>'
+                f'</svg></div>'
             )
         c = color if active else "#2d3748"
-        ds = "stroke-dasharray:8,6;animation:dash-flow 8s linear infinite;" if active else "stroke-dasharray:5,5;opacity:0.25;"
+        ds = f"stroke-dasharray:8,6;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
         x1, x2 = ("0", "100%") if direction == "left-to-right" else ("100%", "0")
         return (
             f'<div style="display:flex;align-items:center;justify-content:center;min-height:82px;padding:0 6px;">' +
@@ -11628,23 +12418,28 @@ with middle_col:
         if not visible:
             return f'<div style="height:34px;"></div>'
         if color == "rainbow":
-            # CSS mask ile dikey kesik cizgi
-            rbw_grad = "linear-gradient(to bottom, #ff0000, #ff8800, #ffff00, #4ade80, #38bdf8, #a855f7)"
-            if active:
-                mask = "repeating-linear-gradient(to bottom, black 0px, black 10px, transparent 10px, transparent 18px)"
-                anim = "animation:dash-mask-v 0.8s linear infinite;"
-                op = "1"
-            else:
-                mask = "repeating-linear-gradient(to bottom, black 0px, black 6px, transparent 6px, transparent 12px)"
-                anim = ""
-                op = "0.25"
+            grad_id = f"rbw_v_{int(_wf_anim_now * 1000)}"
+            defs = (
+                f'<defs><linearGradient id="{grad_id}" x1="0%" y1="0%" x2="0%" y2="100%">'
+                f'<stop offset="0%" stop-color="#ff0000"/>'
+                f'<stop offset="18%" stop-color="#ff8800"/>'
+                f'<stop offset="36%" stop-color="#ffff00"/>'
+                f'<stop offset="54%" stop-color="#4ade80"/>'
+                f'<stop offset="76%" stop-color="#38bdf8"/>'
+                f'<stop offset="100%" stop-color="#a855f7"/>'
+                f'</linearGradient></defs>'
+            )
+            c = f"url(#{grad_id})" if active else "#2d3748"
+            ds = f"stroke-dasharray:6,5;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
             return (
                 f'<div style="display:flex;justify-content:center;">'
-                f'<div style="width:3px;height:34px;background:{rbw_grad};opacity:{op};border-radius:2px;'
-                f"-webkit-mask-image:{mask};mask-image:{mask};{anim}\"></div></div>"
+                f'<svg width="20" height="34" viewBox="0 0 20 34" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;transform:translateZ(0);shape-rendering:geometricPrecision;">'
+                f'{defs}'
+                f'<line x1="10" y1="2" x2="10" y2="32" stroke="{c}" stroke-width="2.5" stroke-linecap="round" style="{ds}"/>'
+                f'</svg></div>'
             )
         c = color if active else "#2d3748"
-        ds = "stroke-dasharray:6,5;animation:dash-flow 8s linear infinite;" if active else "stroke-dasharray:5,5;opacity:0.25;"
+        ds = f"stroke-dasharray:6,5;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
         return (
             f'<div style="display:flex;justify-content:center;">' +
             f'<svg width="20" height="34" viewBox="0 0 20 34" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">' +
@@ -11656,7 +12451,7 @@ with middle_col:
         if not visible:
             return f'<div style="height:42px;"></div>'
         c = color if active else "#2d3748"
-        ds = "stroke-dasharray:8,6;animation:dash-flow 8s linear infinite;" if active else "stroke-dasharray:5,5;opacity:0.25;"
+        ds = f"stroke-dasharray:8,6;{_anim_css('dash-flow', 8.0)}" if active else "stroke-dasharray:5,5;opacity:0.25;"
         x1 = "22%" if source == "left" else "78%"
         return (
             f'<div style="width:100%;height:42px;overflow:visible;">'
@@ -11674,6 +12469,13 @@ with middle_col:
     running_step = next((k for k, v in _STS.items() if v == "running"), None)
     # Bir önceki tamamlanan adım (ok durumundaki en son node)
     done_steps = [k for k, v in _STS.items() if v in ("ok", "partial")]
+    current_batch_step = batch_q[batch_idx] if (batch_on and 0 <= batch_idx < len(batch_q)) else None
+    prev_batch_step = batch_q[batch_idx - 1] if (batch_on and 0 < batch_idx <= len(batch_q)) else None
+    _wf_anim_now = time.time()
+
+    def _anim_css(name: str, duration_s: float) -> str:
+        phase = _wf_anim_now % duration_s
+        return f"animation:{name} {duration_s:.2f}s linear infinite;animation-delay:-{phase:.3f}s;"
 
     def _edge_active(from_node, to_node):
         """Kenar aktif: from tamamlandı VE to çalışıyor ya da tamamlandı."""
@@ -11776,6 +12578,8 @@ with middle_col:
     # Left vertical: Görsel Oluştur (L) -> Sosyal Medya (L) (if no pixverse and no montaj)
     e_v4_lv_vis = batch_on and has_go and not has_pv and not has_vm and has_sm
     e_v4_lv_act = _edge_active("gorsel_olustur", "sosyal_medya")
+    e_h5_vis = batch_on and has_vm and has_sm
+    e_h5_act = _edge_active("video_montaj", "sosyal_medya") or _edge_active("toplu_video", "sosyal_medya")
 
     # --- Render Row 1 ---
     c1, ca, c2 = st.columns([1, 0.28, 1])
@@ -11824,26 +12628,32 @@ with middle_col:
     # --- Render Row 4 ---
     c1, ca, c2 = st.columns([1, 0.28, 1])
     with c1: st.markdown(_nd("gorsel_olustur"), unsafe_allow_html=True)
-    with ca: st.markdown(_harr("rainbow", e_h4_act, e_h4_vis), unsafe_allow_html=True)
+    with ca: st.markdown(_harr("#facc15", e_h4_act, e_h4_vis), unsafe_allow_html=True)
     with c2: st.markdown(_nd("pixverse"), unsafe_allow_html=True)
 
     # --- Arrows Row 4 to 5 ---
-    if e_v4_rl_vis:
-        color = _TOP["video_montaj"] if "video_montaj" in batch_q else _TOP["toplu_video"] if "toplu_video" in batch_q else "#00FFFF"
-        st.markdown(_diarr(color, e_v4_rl_act, e_v4_rl_vis, direction="right-to-left"), unsafe_allow_html=True)
-    elif e_v4_rl_pv_vis:
+    if e_v4_rl_pv_vis:
         st.markdown(_diarr(_TOP["pixverse"], e_v4_rl_pv_act, e_v4_rl_pv_vis, direction="right-to-left"), unsafe_allow_html=True)
     elif e_v4_rv_vis:
         _, _, rv4 = st.columns([1, 0.28, 1])
         with rv4: st.markdown(_varr(_TOP["pixverse"], e_v4_rv_act, e_v4_rv_vis), unsafe_allow_html=True)
     else:
         lv4, _, _ = st.columns([1, 0.28, 1])
-        with lv4: st.markdown(_varr("rainbow", e_v4_lv_act, e_v4_lv_vis), unsafe_allow_html=True)
+        with lv4: st.markdown(_varr("#facc15", e_v4_lv_act, e_v4_lv_vis), unsafe_allow_html=True)
 
     # --- Render Row 5 ---
     c1, ca, c2 = st.columns([1, 0.28, 1])
     with c1: st.markdown(_nd("sosyal_medya"), unsafe_allow_html=True)
-    # The middle column handles empty layout spacer to push Montaj to the right. 
+    with ca:
+        st.markdown(
+            _harr(
+                _TOP["video_montaj"],
+                e_h5_act,
+                e_h5_vis,
+                direction="right-to-left"
+            ),
+            unsafe_allow_html=True
+        )
     with c2: st.markdown(_nd("video_montaj"), unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -11859,6 +12669,14 @@ with right_col:
         s["gemini_api_key"] = st.text_input("🔑 Gemini API Key (Çeviri için):", s.get("gemini_api_key",""), type="password", on_change=clear_dialog_states)
         s["prompt_duzeltme_script"] = st.text_input("✏️ Prompt Düzeltme Script:", s.get("prompt_duzeltme_script",""), on_change=clear_dialog_states)
         s["prompt_duzeltme_txt"] = st.text_input("✏️ düzeltme.txt Yolu:", s.get("prompt_duzeltme_txt",""), on_change=clear_dialog_states)
+        s["sora2_script"] = st.text_input("🎬 Sora 2 Script:", s.get("sora2_script",""), on_change=clear_dialog_states)
+        s["kling30_script"] = st.text_input("🎬 Kling 3.0 Script:", s.get("kling30_script",""), on_change=clear_dialog_states)
+        s["klingo3_script"] = st.text_input("🎬 Kling O3 Script:", s.get("klingo3_script",""), on_change=clear_dialog_states)
+        s["seedance20_script"] = st.text_input("🎬 Seedance 2.0 Script:", s.get("seedance20_script",""), on_change=clear_dialog_states)
+        s["veo31_script"] = st.text_input("🎬 Veo 3.1 Script:", s.get("veo31_script",""), on_change=clear_dialog_states)
+        s["grok_script"] = st.text_input("🎬 Grok Script:", s.get("grok_script",""), on_change=clear_dialog_states)
+        s["v56_script"] = st.text_input("🎬 PixVerse V6 Script:", s.get("v56_script",""), on_change=clear_dialog_states)
+        s["c1_script"] = st.text_input("🎬 PixVerse Cinematic Script:", s.get("c1_script",""), on_change=clear_dialog_states)
         s["video_montaj_script"] = st.text_input("🎞️ Video Montaj Script:", s.get("video_montaj_script",""), on_change=clear_dialog_states)
         s["video_montaj_output_dir"] = st.text_input("🎞️ Yapılan Videolar Klasörü:", s.get("video_montaj_output_dir",""), on_change=clear_dialog_states)
         s["toplu_video_script"] = st.text_input("🎬 Toplu Video Script:", s.get("toplu_video_script",""), on_change=clear_dialog_states)
@@ -11976,15 +12794,17 @@ def gorsel_olustur_dialog():
     if mode != st.session_state.get("go_mode_val"):
         st.session_state["go_mode_val"] = mode
     
-    gorsel_models = ["Nano Banana 2", "Nano Banana Pro", "Nano Banana", "Seedream 5.0 Lite", "Seedream 4.5", "Qwen Image"]
-    current_gm = st.session_state.settings.get("gorsel_model", "Nano Banana 2")
-    if current_gm not in gorsel_models:
-        current_gm = "Nano Banana 2"
+    gorsel_models = PIXVERSE_IMAGE_MODEL_OPTIONS
+    current_gm = _normalize_pixverse_image_model(
+        st.session_state.settings.get("gorsel_model"),
+        DEFAULT_GORSEL_MODEL,
+    )
     
     secili_model = st.selectbox("Görsel Modeli", gorsel_models, index=gorsel_models.index(current_gm))
     if secili_model != current_gm:
         st.session_state.settings["gorsel_model"] = secili_model
         save_settings(st.session_state.settings)
+        st.session_state.ek_dialog_open = "gorsel_olustur"
         st.rerun()
     
     stiller = ["Yok", "Gerçekçi", "Sinematik", "Cartoon", "2D", "Pixel Art", "Anime"]
@@ -12134,8 +12954,13 @@ def gorsel_olustur_dialog():
                     with open(os.path.join(vp_sub, "prompt.txt"), "w", encoding="utf-8") as f:
                         f.write(final_v_p)
             
-            st.session_state["go_motion_prompt_saved"] = bool(mode == "Görsel" and has_motion_prompt)
-            if mode == "Görsel" and has_motion_prompt:
+            motion_prompt_active = bool(mode == "Görsel" and has_motion_prompt)
+            st.session_state["go_motion_prompt_saved"] = motion_prompt_active
+            st.session_state.settings["gorsel_olustur_mode"] = _normalize_gorsel_olustur_mode(mode)
+            st.session_state.settings["gorsel_motion_prompt_active"] = motion_prompt_active
+            save_settings(st.session_state.settings)
+            _save_gorsel_olustur_state(mode, motion_prompt_active)
+            if motion_prompt_active:
                 log("[INFO] Görsel hareketlendirme promptları kaydedildi. Video Üret görsel prompt klasörünü kullanacak.")
             else:
                 log("[INFO] Görsel hareketlendirme promptu aktif değil. Video Üret standart Prompt klasörünü kullanacak.")
@@ -12153,6 +12978,10 @@ def gorsel_olustur_dialog():
                 del st.session_state[k]
             st.session_state.go_gorsel_count = 1
             st.session_state.go_vid_count = 1
+            st.session_state["go_motion_prompt_saved"] = False
+            st.session_state.settings["gorsel_motion_prompt_active"] = False
+            save_settings(st.session_state.settings)
+            _save_gorsel_olustur_state(st.session_state.get("go_mode_val", ""), False)
             st.session_state.ek_dialog_open = "gorsel_olustur"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)

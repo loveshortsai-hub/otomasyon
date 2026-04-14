@@ -28,6 +28,9 @@ def main():
         "Nano Banana": "gemini-2.5-flash",
         "Seedream 5.0 Lite": "seedream-5.0-lite",
         "Seedream 4.5": "seedream-4.5",
+        "Seedream 4.0": "seedream-4.0",
+        "Kling O3": "kling-image-o3",
+        "Kling 3.0": "kling-image-v3",
         "Qwen Image": "qwen-image"
     }
     
@@ -71,6 +74,27 @@ def main():
         print("[ERROR] PixVerse komutu bulunamadı! Lütfen PixVerse CLI yüklü olduğundan emin olun.")
         sys.exit(1)
         
+    quality_options = {
+        "qwen-image": ["720p", "1080p"],
+        "gemini-3.1-flash": ["512p", "1080p", "1440p", "2160p"],
+        "gemini-3.0": ["1080p", "1440p", "2160p"],
+        "gemini-2.5-flash": ["1080p"],
+        "seedream-5.0-lite": ["1440p", "1800p"],
+        "seedream-4.5": ["1440p", "2160p"],
+        "seedream-4.0": ["1080p", "1440p", "2160p"],
+        "kling-image-o3": ["1080p", "1440p", "2160p"],
+        "kling-image-v3": ["1080p", "1440p"],
+    }
+
+    kalite_seviyesi = str(settings.get("gorsel_kalitesi", "Standart") or "Standart").strip().lower()
+    mevcut_qualities = quality_options.get(px_model, ["1080p"])
+    if kalite_seviyesi == "maksimum":
+        secili_quality = mevcut_qualities[-1]
+    elif kalite_seviyesi in {"yüksek", "yuksek"}:
+        secili_quality = mevcut_qualities[min(len(mevcut_qualities) - 1, len(mevcut_qualities) // 2)]
+    else:
+        secili_quality = mevcut_qualities[0]
+
     failed_any = False
     
     for num, folder_path in prompt_folders:
@@ -95,7 +119,20 @@ def main():
         
         # 1. Create Image
         boyut = settings.get("gorsel_boyutu", "16:9")
-        cmd_create = [pixverse_path, "create", "image", "--prompt", prompt_text, "--model", px_model, "--aspect-ratio", boyut, "--json"]
+        cmd_create = [
+            pixverse_path,
+            "create",
+            "image",
+            "--prompt",
+            prompt_text,
+            "--model",
+            px_model,
+            "--quality",
+            secili_quality,
+            "--aspect-ratio",
+            boyut,
+            "--json",
+        ]
         try:
             start_time = time.time()
             proc = subprocess.run(cmd_create, capture_output=True, text=True)

@@ -1,25 +1,46 @@
 from google import genai
 import os
 import re
+import json
 
 # ============ CONFIGURATION ============
 BASE_SYS_PATH = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma"
 PROMPTS_ROOT_PATH = r"C:\Users\User\Desktop\Otomasyon\Prompt"
 
 CORRECTION_FILE = os.path.join(BASE_SYS_PATH, "düzeltme.txt")
-API_KEY_FILE = os.path.join(BASE_SYS_PATH, "api_key.txt")
+APP_BASE_DIR = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
+SETTINGS_CANDIDATES = [
+    os.path.join(APP_BASE_DIR, ".control", "settings.local.json"),
+    os.path.join(APP_BASE_DIR, "settings.local.json"),
+]
 
 # ============ API KEY ============
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key and os.path.exists(API_KEY_FILE):
-    with open(API_KEY_FILE, 'r') as f:
-        api_key = f.read().strip()
-    print(f"✅ API key dosyadan yüklendi: {API_KEY_FILE}")
+def load_api_key():
+    for settings_path in SETTINGS_CANDIDATES:
+        try:
+            if os.path.exists(settings_path):
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                api_key = str(data.get("gemini_api_key", "")).strip()
+                if api_key:
+                    print(f"✅ API key ayarlardan yüklendi: {settings_path}")
+                    return api_key
+        except Exception:
+            pass
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if api_key:
+        print("✅ API key ortam değişkeninden yüklendi: GEMINI_API_KEY")
+        return api_key
+
+    return None
+
+api_key = load_api_key()
 
 if not api_key:
     print("❌ HATA: GEMINI_API_KEY bulunamadı!")
-    print(f"   SEÇENEK 1: setx GEMINI_API_KEY your_key_here")
-    print(f"   SEÇENEK 2: {API_KEY_FILE} dosyası oluştur ve içine API key yaz")
+    print("   SEÇENEK 1: app.py Ayarlar bölümüne Gemini API Key gir")
+    print("   SEÇENEK 2: setx GEMINI_API_KEY your_key_here")
     exit(1)
 
 client = genai.Client(api_key=api_key)
@@ -57,7 +78,7 @@ Lütfen bu promptu düzeltme talimatlarına göre iyileştir ve daha iyi hale ge
 Yukarıdaki düzeltme talimatlarını dikkate alarak, mevcut promptu iyileştir ve sadece 
 düzeltilmiş promptu döndür. Açıklama veya ek metin ekleme, sadece düzeltilmiş promptu ver."""
         response = client.models.generate_content(
-            model="gemini-3-pro-preview",
+            model="gemini-3-flash-preview",
             contents=[combined_prompt]
         )
         return response.text
