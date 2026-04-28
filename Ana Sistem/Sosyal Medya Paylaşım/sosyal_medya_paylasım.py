@@ -6,6 +6,8 @@ import time
 import traceback
 import datetime
 import threading
+import uuid
+from urllib.parse import quote
 
 try:
     import requests
@@ -98,7 +100,6 @@ URL_VERIFY_MAX_RETRIES = 3       # Aynı URL için maksimum doğrulama denemesi
 URL_VERIFY_BASE_WAIT = 5         # İlk doğrulama bekleme süresi (saniye)
 URL_VERIFY_WAIT_INCREMENT = 5    # Her denemede eklenen bekleme süresi (5s, 10s, 15s)
 
-
 class StopRequested(Exception):
     pass
 
@@ -139,6 +140,29 @@ def read_file_content(full_path):
 
 def get_config_path():
     return r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Sosyal Medya Paylaşım"
+
+
+def parse_key_value_text(raw_text):
+    data = {}
+    for raw_line in str(raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+        elif ":" in line:
+            key, value = line.split(":", 1)
+        else:
+            continue
+        key = key.strip().lower().replace("-", "_").replace(" ", "_")
+        value = value.strip().strip('"').strip("'")
+        if key:
+            data[key] = value
+    return data
+
+
+def truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "evet", "on", "acik", "açık", "+"}
 
 
 def get_shared_control_dir():
@@ -373,7 +397,218 @@ class VideoUploader:
     _upload_cache = {}
     _cache_lock = threading.Lock()
     _last_upload_time = 0
+    _storage_config_loaded = False
+    _storage_config = None
+    _storage_config_warning_shown = False
     _litterbox_available = None  # v4: DNS erişim durumu önbelleği
+    _uploaded_url_meta = {}
+
+    @classmethod
+    def _load_storage_config(cls):
+        """Load optional R2/S3 settings for durable Buffer media URLs."""
+        if cls._storage_config_loaded:
+            return cls._storage_config
+
+        cls._storage_config_loaded = True
+        file_cfg = {}
+        cfg_path = os.path.join(get_config_path(), "r2_s3_ayarlar.txt")
+        raw_cfg = read_file_content(cfg_path)
+        if raw_cfg:
+            file_cfg = parse_key_value_text(raw_cfg)
+
+        env_cfg = {
+            "provider": os.environ.get("BUFFER_MEDIA_STORAGE") or os.environ.get("MEDIA_STORAGE_PROVIDER"),
+            "endpoint_url": os.environ.get("MEDIA_STORAGE_ENDPOINT_URL") or os.environ.get("R2_ENDPOINT_URL"),
+            "account_id": os.environ.get("R2_ACCOUNT_ID"),
+            "bucket": os.environ.get("MEDIA_STORAGE_BUCKET") or os.environ.get("R2_BUCKET") or os.environ.get("S3_BUCKET"),
+            "region": os.environ.get("MEDIA_STORAGE_REGION") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+            "access_key_id": os.environ.get("MEDIA_STORAGE_ACCESS_KEY_ID") or os.environ.get("R2_ACCESS_KEY_ID") or os.environ.get("AWS_ACCESS_KEY_ID"),
+            "secret_access_key": os.environ.get("MEDIA_STORAGE_SECRET_ACCESS_KEY") or os.environ.get("R2_SECRET_ACCESS_KEY") or os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            "api_token": os.environ.get("CLOUDFLARE_API_TOKEN") or os.environ.get("R2_API_TOKEN") or os.environ.get("MEDIA_STORAGE_API_TOKEN"),
+            "public_base_url": os.environ.get("MEDIA_STORAGE_PUBLIC_BASE_URL") or os.environ.get("R2_PUBLIC_BASE_URL") or os.environ.get("S3_PUBLIC_BASE_URL"),
+            "prefix": os.environ.get("MEDIA_STORAGE_PREFIX"),
+            "acl": os.environ.get("MEDIA_STORAGE_ACL"),
+            "temp_credentials_ttl": os.environ.get("R2_TEMP_CREDENTIALS_TTL") or os.environ.get("MEDIA_STORAGE_TEMP_CREDENTIALS_TTL"),
+        }
+        cfg = {k: v for k, v in file_cfg.items() if str(v or "").strip()}
+        cfg.update({k: v for k, v in env_cfg.items() if str(v or "").strip()})
+
+        enabled_raw = cfg.get("enabled")
+        if enabled_raw is not None and not truthy(enabled_raw):
+            cls._storage_config = None
+            return None
+
+        provider = str(cfg.get("provider") or "s3").strip().lower()
+        account_id = str(cfg.get("account_id") or "").strip()
+        endpoint_url = str(cfg.get("endpoint_url") or "").strip()
+        if not endpoint_url and provider == "r2" and account_id:
+            endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
+
+        bucket = str(cfg.get("bucket") or "").strip()
+        access_key = str(cfg.get("access_key_id") or cfg.get("access_key") or "").strip()
+        secret_key = str(cfg.get("secret_access_key") or cfg.get("secret_key") or "").strip()
+        api_token = str(cfg.get("api_token") or cfg.get("token") or "").strip()
+        region = str(cfg.get("region") or ("auto" if provider == "r2" else "us-east-1")).strip()
+        public_base_url = str(cfg.get("public_base_url") or "").strip().rstrip("/")
+        prefix = str(cfg.get("prefix") or "buffer-videos").strip().strip("/")
+        acl = str(cfg.get("acl") or "").strip()
+        try:
+            temp_credentials_ttl = int(str(cfg.get("temp_credentials_ttl") or "3600").strip())
+        except Exception:
+            temp_credentials_ttl = 3600
+        temp_credentials_ttl = max(900, min(604800, temp_credentials_ttl))
+
+        if provider in {"s3", "aws"} and not endpoint_url:
+            if region == "us-east-1":
+                endpoint_url = "https://s3.amazonaws.com"
+            else:
+                endpoint_url = f"https://s3.{region}.amazonaws.com"
+        if provider in {"s3", "aws"} and not public_base_url and bucket:
+            if region == "us-east-1":
+                public_base_url = f"https://{bucket}.s3.amazonaws.com"
+            else:
+                public_base_url = f"https://{bucket}.s3.{region}.amazonaws.com"
+
+        missing = [
+            name for name, value in {
+                "bucket": bucket,
+                "access_key_id": access_key,
+                "endpoint_url": endpoint_url,
+                "public_base_url": public_base_url,
+            }.items()
+            if not value
+        ]
+        if provider == "r2":
+            if not secret_key and not api_token:
+                missing.append("secret_access_key/api_token")
+        elif not secret_key:
+            missing.append("secret_access_key")
+        if missing:
+            if raw_cfg and not cls._storage_config_warning_shown:
+                print(f"[WARN] R2/S3 ayarı eksik ({', '.join(missing)}). Kalıcı URL atlandı, uguu.se kullanılacak.")
+                cls._storage_config_warning_shown = True
+            cls._storage_config = None
+            return None
+
+        cls._storage_config = {
+            "provider": provider,
+            "endpoint_url": endpoint_url.rstrip("/"),
+            "bucket": bucket,
+            "region": region,
+            "account_id": account_id,
+            "access_key_id": access_key,
+            "secret_access_key": secret_key,
+            "api_token": api_token,
+            "public_base_url": public_base_url,
+            "prefix": prefix,
+            "acl": acl,
+            "temp_credentials_ttl": temp_credentials_ttl,
+        }
+        return cls._storage_config
+
+    @staticmethod
+    def _get_boto3_modules():
+        try:
+            import boto3
+            from botocore.config import Config
+            return boto3, Config
+        except ImportError:
+            import subprocess as _sp
+            _sp.check_call([sys.executable, "-m", "pip", "install", "boto3", "-q"])
+            import boto3
+            from botocore.config import Config
+            return boto3, Config
+
+    @staticmethod
+    def _safe_object_name(video_path):
+        name = os.path.basename(video_path)
+        stem, ext = os.path.splitext(name)
+        safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "video"
+        safe_ext = re.sub(r"[^A-Za-z0-9.]+", "", ext.lower()) or ".mp4"
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return f"{timestamp}_{uuid.uuid4().hex[:10]}_{safe_stem}{safe_ext}"
+
+    @staticmethod
+    def _mint_r2_temp_credentials(cfg):
+        account_id = str(cfg.get("account_id") or "").strip()
+        api_token = str(cfg.get("api_token") or "").strip()
+        parent_access_key_id = str(cfg.get("access_key_id") or "").strip()
+        bucket = str(cfg.get("bucket") or "").strip()
+        if not account_id or not api_token or not parent_access_key_id or not bucket:
+            raise Exception("R2 geçici kimlik üretimi için account_id, api_token, access_key_id ve bucket gerekli")
+
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/r2/temp-access-credentials"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "bucket": bucket,
+            "parentAccessKeyId": parent_access_key_id,
+            "permission": "object-read-write",
+            "ttlSeconds": int(cfg.get("temp_credentials_ttl") or 3600),
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code != 200:
+            raise Exception(f"R2 geçici kimlik API hatası: {resp.status_code}")
+
+        data = resp.json()
+        if not data.get("success"):
+            errors = data.get("errors") or []
+            msg = errors[0].get("message") if errors and isinstance(errors[0], dict) else str(data)
+            raise Exception(f"R2 geçici kimlik alınamadı: {msg}")
+
+        result = data.get("result") or {}
+        access_key = str(result.get("accessKeyId") or "").strip()
+        secret_key = str(result.get("secretAccessKey") or "").strip()
+        session_token = str(result.get("sessionToken") or "").strip()
+        if not access_key or not secret_key or not session_token:
+            raise Exception("R2 geçici kimlik yanıtı eksik")
+        return access_key, secret_key, session_token
+
+    @classmethod
+    def _build_s3_client(cls, cfg):
+        boto3, Config = cls._get_boto3_modules()
+        base_kwargs = {
+            "service_name": "s3",
+            "endpoint_url": cfg["endpoint_url"],
+            "region_name": cfg["region"],
+            "config": Config(signature_version="s3v4"),
+        }
+        if cfg.get("provider") == "r2" and not cfg.get("secret_access_key"):
+            temp_access_key, temp_secret_key, temp_session_token = cls._mint_r2_temp_credentials(cfg)
+            base_kwargs.update({
+                "aws_access_key_id": temp_access_key,
+                "aws_secret_access_key": temp_secret_key,
+                "aws_session_token": temp_session_token,
+            })
+        else:
+            base_kwargs.update({
+                "aws_access_key_id": cfg["access_key_id"],
+                "aws_secret_access_key": cfg["secret_access_key"],
+            })
+        return boto3.client(**base_kwargs)
+
+    @classmethod
+    def _verify_uploaded_resource(cls, url, service_name):
+        meta = cls._uploaded_url_meta.get(url)
+        if not meta:
+            return cls._verify_url_accessible(url)
+
+        if meta.get("type") == "s3_compatible":
+            try:
+                client = cls._build_s3_client(meta["cfg"])
+                resp = client.head_object(Bucket=meta["bucket"], Key=meta["object_key"])
+                if int(resp.get("ContentLength", -1)) == 0:
+                    print("[WARN] R2/S3 doğrulama: ContentLength 0")
+                    return False
+                return True
+            except Exception as e:
+                short_err = _shorten_exception(str(e))
+                print(f"[WARN] R2/S3 doğrulama hatası: {short_err}")
+                return False
+
+        return cls._verify_url_accessible(url)
 
     @classmethod
     def upload_video(cls, video_path, max_retries=2, force_new=False):
@@ -385,7 +620,7 @@ class VideoUploader:
             with cls._cache_lock:
                 if abs_path in cls._upload_cache:
                     cached_url = cls._upload_cache[abs_path]
-                    if cls._verify_url_accessible(cached_url):
+                    if cls._verify_uploaded_resource(cached_url, "cache"):
                         print(f"[INFO] Video URL önbellekten alındı ve doğrulandı: {cached_url[:80]}...")
                         return cached_url
                     else:
@@ -400,11 +635,15 @@ class VideoUploader:
         file_size_mb = file_size / (1024 * 1024)
         print(f"[INFO] Video yükleniyor: {os.path.basename(abs_path)} ({file_size_mb:.1f} MB)")
 
-        if file_size_mb > 200:
+        has_durable_storage = cls._load_storage_config() is not None
+        if file_size_mb > 200 and not has_durable_storage:
             print(f"[ERROR] Video dosyası çok büyük ({file_size_mb:.1f} MB). Maksimum 200 MB desteklenir.")
             return None
 
         # Rate limiting koruması - ardışık yüklemeler arası bekleme
+        if file_size_mb > 200 and has_durable_storage:
+            print("[INFO] Video 200 MB üstünde; yalnızca R2/S3 kalıcı depolama kullanılacak.")
+
         now = time.time()
         elapsed = now - cls._last_upload_time
         if elapsed < 5 and cls._last_upload_time > 0:
@@ -463,7 +702,7 @@ class VideoUploader:
             else:
                 print(f"[INFO] URL doğrulanıyor...")
 
-            if cls._verify_url_accessible(url):
+            if cls._verify_uploaded_resource(url, service_name):
                 if attempt > 0:
                     print(f"[OK] URL doğrulama başarılı (deneme {attempt + 1})")
                 return True
@@ -480,6 +719,10 @@ class VideoUploader:
         servisi listeye dahil etmeden hızlıca atlar.
         """
         methods = []
+        if cls._load_storage_config():
+            methods.append(("R2/S3 kalıcı depolama", cls._upload_s3_compatible))
+            if file_size_mb > 200:
+                return methods
 
         # 1. uguu.se — birincil (DNS güvenilir, 3 saat URL süresi)
         if file_size_mb <= 100:
@@ -518,7 +761,7 @@ class VideoUploader:
 
         try:
             socket.setdefaulttimeout(5)
-            socket.getaddrinfo("litter.catbox.moe", 443)
+            socket.getaddrinfo("litterbox.catbox.moe", 443)
             cls._litterbox_available = True
         except (socket.gaierror, socket.timeout, OSError):
             cls._litterbox_available = False
@@ -573,6 +816,169 @@ class VideoUploader:
                 cls._upload_cache.pop(abs_path, None)
             else:
                 cls._upload_cache.clear()
+
+    @classmethod
+    def _upload_s3_compatible(cls, video_path):
+        """Cloudflare R2 / AWS S3 compatible durable public URL upload."""
+        cfg = cls._load_storage_config()
+        if not cfg:
+            raise Exception("R2/S3 ayarı bulunamadı")
+
+        key_name = cls._safe_object_name(video_path)
+        prefix = cfg.get("prefix") or ""
+        object_key = f"{prefix}/{key_name}" if prefix else key_name
+        object_key = object_key.replace("\\", "/").lstrip("/")
+
+        client = cls._build_s3_client(cfg)
+
+        extra_args = {"ContentType": "video/mp4"}
+        acl = str(cfg.get("acl") or "").strip()
+        if acl:
+            extra_args["ACL"] = acl
+
+        with open(video_path, "rb") as f:
+            client.upload_fileobj(f, cfg["bucket"], object_key, ExtraArgs=extra_args)
+
+        public_url = f"{cfg['public_base_url']}/{quote(object_key, safe='/-_.~')}"
+        cls._uploaded_url_meta[public_url] = {
+            "type": "s3_compatible",
+            "cfg": dict(cfg),
+            "bucket": cfg["bucket"],
+            "object_key": object_key,
+        }
+        print(f"[OK] R2/S3 yükleme tamamlandı: {public_url}")
+        return public_url
+
+    @classmethod
+    def cleanup_old_storage_uploads(cls, older_than_days=30, dry_run=False):
+        """Delete old objects from the configured durable storage prefix."""
+        result = {
+            "ok": False,
+            "partial": False,
+            "provider": "",
+            "bucket": "",
+            "prefix": "",
+            "older_than_days": 0,
+            "cutoff": "",
+            "scanned": 0,
+            "matched": 0,
+            "deleted": 0,
+            "kept": 0,
+            "sample_deleted_keys": [],
+            "errors": [],
+            "message": "",
+        }
+
+        try:
+            days_value = int(str(older_than_days).strip())
+        except Exception:
+            days_value = 30
+        days_value = max(1, days_value)
+        result["older_than_days"] = days_value
+
+        cfg = cls._load_storage_config()
+        if not cfg:
+            result["message"] = "R2/S3 ayarı bulunamadı."
+            return result
+
+        prefix = str(cfg.get("prefix") or "").strip().strip("/")
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_value)
+
+        result["provider"] = str(cfg.get("provider") or "").strip().lower()
+        result["bucket"] = str(cfg.get("bucket") or "").strip()
+        result["prefix"] = prefix
+        result["cutoff"] = cutoff.isoformat()
+
+        client = cls._build_s3_client(cfg)
+        request_kwargs = {"Bucket": result["bucket"]}
+        if prefix:
+            request_kwargs["Prefix"] = prefix + "/"
+
+        pending_delete = []
+
+        def flush_delete_batch():
+            nonlocal pending_delete
+            if dry_run or not pending_delete:
+                pending_delete = []
+                return
+
+            response = client.delete_objects(
+                Bucket=result["bucket"],
+                Delete={"Objects": list(pending_delete), "Quiet": False},
+            )
+            deleted_items = response.get("Deleted") or []
+            result["deleted"] += len(deleted_items)
+            for item in deleted_items:
+                key = str((item or {}).get("Key") or "").strip()
+                if key and len(result["sample_deleted_keys"]) < 10:
+                    result["sample_deleted_keys"].append(key)
+
+            for err in response.get("Errors") or []:
+                key = str((err or {}).get("Key") or "").strip()
+                msg = str((err or {}).get("Message") or "Silme hatası").strip()
+                result["errors"].append(f"{key}: {msg}" if key else msg)
+            pending_delete = []
+
+        continuation_token = None
+        while True:
+            list_kwargs = dict(request_kwargs)
+            if continuation_token:
+                list_kwargs["ContinuationToken"] = continuation_token
+            page = client.list_objects_v2(**list_kwargs)
+
+            for entry in page.get("Contents") or []:
+                key = str((entry or {}).get("Key") or "").strip()
+                if not key or key.endswith("/"):
+                    continue
+
+                result["scanned"] += 1
+                last_modified = entry.get("LastModified")
+                if not isinstance(last_modified, datetime.datetime):
+                    result["kept"] += 1
+                    continue
+
+                if last_modified.tzinfo is None:
+                    last_modified = last_modified.replace(tzinfo=datetime.timezone.utc)
+                else:
+                    last_modified = last_modified.astimezone(datetime.timezone.utc)
+
+                if last_modified >= cutoff:
+                    result["kept"] += 1
+                    continue
+
+                result["matched"] += 1
+                if dry_run:
+                    if len(result["sample_deleted_keys"]) < 10:
+                        result["sample_deleted_keys"].append(key)
+                    continue
+
+                pending_delete.append({"Key": key})
+                if len(pending_delete) >= 1000:
+                    flush_delete_batch()
+
+            if not page.get("IsTruncated"):
+                break
+            continuation_token = page.get("NextContinuationToken")
+            if not continuation_token:
+                break
+
+        flush_delete_batch()
+
+        if dry_run:
+            result["deleted"] = result["matched"]
+
+        if result["deleted"] > 0:
+            cls.clear_cache()
+
+        result["partial"] = bool(result["errors"])
+        result["ok"] = True
+        if result["matched"] == 0:
+            result["message"] = f"{days_value} günden eski silinecek dosya bulunamadı."
+        elif result["partial"]:
+            result["message"] = f"{result['deleted']} dosya silindi, bazı öğeler temizlenemedi."
+        else:
+            result["message"] = f"{result['deleted']} dosya silindi."
+        return result
 
     @staticmethod
     def _upload_uguu(video_path):
@@ -645,6 +1051,7 @@ class VideoUploader:
     def clear_cache(cls):
         with cls._cache_lock:
             cls._upload_cache.clear()
+            cls._uploaded_url_meta.clear()
         cls._last_upload_time = 0
         cls._litterbox_available = None
 
@@ -663,6 +1070,14 @@ def resolve_video_url(video_path, force_new=False):
         return None
 
     return VideoUploader.upload_video(video_path, force_new=force_new)
+
+
+def cleanup_old_storage_uploads(older_than_days=30, dry_run=False):
+    """Convenience wrapper for UI-triggered R2/S3 cleanup."""
+    return VideoUploader.cleanup_old_storage_uploads(
+        older_than_days=older_than_days,
+        dry_run=dry_run,
+    )
 
 
 # ============================================================
@@ -860,6 +1275,30 @@ def natural_sort_key(value):
     return out
 
 
+def get_toplu_video_runtime_limit(video_root, total_count=0):
+    try:
+        kaynak_secim = read_file_content(os.path.join(get_config_path(), "video_kaynak_secim.txt"))
+        video_root_text = os.path.normcase(os.path.abspath(str(video_root or "")))
+        is_toplu_video = "toplu video montaj" in str(kaynak_secim or "").casefold() or "toplu montaj" in video_root_text.casefold()
+        if not is_toplu_video:
+            return 0
+
+        limit_file = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma\.control\toplu_video_runtime_limit.txt"
+        if not os.path.exists(limit_file):
+            return 0
+        raw = read_file_content(limit_file).strip()
+        if not raw:
+            return 0
+        limit = int(float(raw.replace(",", ".")))
+        if limit <= 0:
+            return 0
+        if total_count and total_count > 0:
+            return min(limit, int(total_count))
+        return limit
+    except Exception:
+        return 0
+
+
 def get_video_root_path():
     kaynak_txt = os.path.join(get_config_path(), "video_kaynak.txt")
     content = read_file_content(kaynak_txt)
@@ -891,6 +1330,9 @@ def get_video_files():
                             files.append(os.path.join(subdir, file_name))
                 except Exception:
                     continue
+            limit = get_toplu_video_runtime_limit(video_root, len(files))
+            if limit > 0:
+                files = files[:limit]
             return files
 
         for file_name in entries:
@@ -898,7 +1340,11 @@ def get_video_files():
                 files.append(os.path.join(video_root, file_name))
     except Exception:
         return []
-    return sorted(files, key=natural_sort_key)
+    files = sorted(files, key=natural_sort_key)
+    limit = get_toplu_video_runtime_limit(video_root, len(files))
+    if limit > 0:
+        files = files[:limit]
+    return files
 
 
 def parse_account_line(line):
@@ -942,8 +1388,29 @@ def parse_account_line(line):
     return {"email": email, "password": password, "token": "", "selected": True}
 
 
+def normalize_account_strategy(value=None, *, loop_accounts=None, mode=None, legacy_safe=False):
+    mode_value = str(mode or "").strip().lower()
+    if mode_value and mode_value != "bulk":
+        return "single"
+
+    raw = str(value or "").strip().casefold()
+    if raw:
+        if any(key in raw for key in ("tüm hesap", "tum hesap", "fanout", "fan-out", "hepsinde", "all accounts")):
+            return "fanout"
+        if any(key in raw for key in ("sırayla", "sirayla", "dağıt", "dagit", "round", "round_robin", "round-robin", "döngü", "dongu")):
+            return "round_robin"
+
+    # Eski kayıtlarda yalnızca Hesap Döngü alanı vardı. Güvenli varsayılan
+    # olarak çoklu hesapta videoları sırayla dağıt moduna geç.
+    if loop_accounts is not None:
+        if legacy_safe:
+            return "round_robin"
+        return "round_robin" if bool(loop_accounts) else "fanout"
+    return "round_robin"
+
+
 def parse_account_config(raw_text):
-    cfg = {"mode": "single", "loop_accounts": False, "accounts": [], "raw": str(raw_text or "")}
+    cfg = {"mode": "single", "loop_accounts": False, "strategy": "single", "accounts": [], "raw": str(raw_text or "")}
     raw = str(raw_text or "").strip()
     if not raw:
         return cfg
@@ -951,12 +1418,16 @@ def parse_account_config(raw_text):
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     mode = None
     loop_accounts = False
+    strategy = ""
     accounts = []
 
     for line in lines:
         low = line.casefold()
         if low.startswith(("hesap modu:", "mod:", "mode:")):
             mode = "bulk" if any(k in low for k in ("toplu", "bulk", "çoklu", "coklu")) else "single"
+            continue
+        if low.startswith(("paylaşım stratejisi:", "paylasim stratejisi:", "strateji:", "strategy:")):
+            strategy = line.split(":", 1)[1].strip()
             continue
         if low.startswith(("hesap döngü:", "hesap dongu:", "döngü:", "dongu:", "loop:")):
             loop_accounts = any(k in low for k in ("evet", "açık", "acik", "on", "true", "1", "+"))
@@ -981,8 +1452,15 @@ def parse_account_config(raw_text):
     if mode is None:
         mode = "bulk" if len(accounts) > 1 else "single"
 
+    normalized_strategy = normalize_account_strategy(
+        strategy,
+        loop_accounts=loop_accounts,
+        mode=mode,
+        legacy_safe=True,
+    )
     cfg["mode"] = mode
-    cfg["loop_accounts"] = bool(loop_accounts)
+    cfg["strategy"] = normalized_strategy
+    cfg["loop_accounts"] = (normalized_strategy == "round_robin") if mode == "bulk" else False
     # Her hesabın selected bilgisini koru (yoksa varsayılan True)
     for acc in accounts:
         if "selected" not in acc:
@@ -1232,7 +1710,11 @@ def build_item_jobs():
 def assign_accounts_to_jobs(jobs, account_cfg):
     mode = str((account_cfg or {}).get("mode", "single") or "single").strip().lower()
     raw_accounts = list((account_cfg or {}).get("accounts") or [])
-    loop_accounts = bool((account_cfg or {}).get("loop_accounts", False))
+    strategy = normalize_account_strategy(
+        (account_cfg or {}).get("strategy"),
+        loop_accounts=(account_cfg or {}).get("loop_accounts"),
+        mode=mode,
+    )
     assigned = []
     skipped_jobs = []
 
@@ -1261,7 +1743,7 @@ def assign_accounts_to_jobs(jobs, account_cfg):
     else:
         accounts = all_accounts
 
-    fanout_all_accounts = mode == "bulk" and not loop_accounts and len(accounts) > 1
+    fanout_all_accounts = mode == "bulk" and strategy == "fanout" and len(accounts) > 1
 
     if fanout_all_accounts:
         print(f"[INFO] Toplu hesap paylaşımı: Her video {len(accounts)} seçili hesapta ayrı ayrı paylaşılacak.")
@@ -1274,25 +1756,19 @@ def assign_accounts_to_jobs(jobs, account_cfg):
                 assigned.append(item)
         return assigned, skipped_jobs
 
-    if mode == "bulk" and loop_accounts and accounts:
-        print(f"[INFO] Toplu hesap paylaşımı: Videolar seçili hesaplara sırayla dağıtılacak (döngü açık).")
+    if mode == "bulk" and len(accounts) > 1:
+        print(f"[INFO] Toplu hesap paylaşımı: Videolar seçili hesaplara sırayla dağıtılacak.")
 
     for idx, job in enumerate(jobs):
         if mode == "bulk":
-            if idx < len(accounts):
-                account = accounts[idx]
-            elif loop_accounts and accounts:
-                account = accounts[idx % len(accounts)]
-            else:
-                skipped_jobs.append(job)
-                continue
+            account = accounts[idx % len(accounts)]
         else:
             account = accounts[0]
 
         item = dict(job)
         item["account"] = account
         item["account_index"] = int(account.get("_source_index") or 0) or ((idx % len(accounts)) + 1 if mode == "bulk" and accounts else 1)
-        item["use_account_suffix"] = False
+        item["use_account_suffix"] = mode == "bulk" and len(accounts) > 1
         assigned.append(item)
 
     return assigned, skipped_jobs
@@ -1625,8 +2101,10 @@ def process_tiktok(client, video_path, video_url, settings):
         if not video_url:
             return False, "Video URL'si oluşturulamadı. Video dosyası yüklenemedi."
 
-        # TikTok için video URL erişilebilirliğini tekrar doğrula
-        if not VideoUploader._verify_url_accessible(video_url):
+        # TikTok akışında da R2/S3 metadata-aware doğrulamayı kullan.
+        # Aksi halde r2.dev public HEAD isteğindeki geçici bağlantı kopmaları
+        # yanlış negatif üretip gereksiz yeniden yüklemeye yol açabiliyor.
+        if not VideoUploader._verify_uploaded_resource(video_url, "TikTok"):
             print(f"[WARN] Video URL erişilebilir değil, yeniden yükleniyor...")
             VideoUploader.invalidate_cache(video_path)
             new_url = resolve_video_url(video_path, force_new=True)
@@ -1840,7 +2318,8 @@ def start_bot():
         print(f"[INFO] Hesap modu: {'Toplu Hesap' if account_cfg.get('mode') == 'bulk' else 'Tek Hesap'}")
         print(f"[INFO] Geçerli hesap sayısı: {len(accounts)}")
         if account_cfg.get("mode") == "bulk":
-            print(f"[INFO] Hesap döngüsü: {'Açık' if account_cfg.get('loop_accounts') else 'Kapalı'}")
+            strategy_label = "Sırayla Dağıt" if normalize_account_strategy(account_cfg.get("strategy"), loop_accounts=account_cfg.get("loop_accounts"), mode="bulk") == "round_robin" else "Her Videoyu Tüm Hesaplarda Paylaş"
+            print(f"[INFO] Paylaşım stratejisi: {strategy_label}")
         print(f"[INFO] Toplam iş öğesi sayısı: {len(jobs)}")
         print(f"[INFO] Toplam atanmış paylaşım görevi: {len(assigned_jobs)}")
         print(f"[INFO] Paylaşım yöntemi: Buffer API (GraphQL)")

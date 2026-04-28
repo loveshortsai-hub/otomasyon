@@ -1,6 +1,19 @@
-Hesap Modu: Tek Hesap
-Hesap Döngü: Kapalı
+Hesap Modu: Toplu Hesap
+Paylaşım Stratejisi: Sırayla Dağıt
+Hesap Döngü: Açık
 Hesaplar:
-API Token: SLiVi7Aakz_qkcv4tzJxI1mIJ7_irSJGeyVznXi4pI0 | Seçili: Hayır
-API Token: tEDSbCfcL7elTLar9IiPjSQI_IJaaDmN6gWRCQ4jiNe | Seçili: Evet
-API Token: OsPOg8-kq38r8ONhBzNuRkXKerjwwSs9LIyRDOivaYK | Seçili: Evet
+API Token: jNPou7AWeZaxkHjcmgJi1XHrEAfMsL5LvR9n8lBS1aN | Seçili: Hayır | Ad: adidoshortsai
+API Token: -03xT6rqv5wYhkNaXZGVROjDBjFCZTR8SsC1a1oI1O6 | Seçili: Hayır | Ad: brawl stars dance
+API Token: gHcgsZUkQT5eUsiaiMCzZ5B7Mzk2ChTyEGPxpiFDR7g | Seçili: Hayır | Ad: brawl stars lorz
+API Token: VVQyXuMMHaQCqp-R6xBY9r1RbD1qT4xwgG2v4ck62PJ | Seçili: Hayır | Ad: dizi fragman
+API Token: y8uolD_0FcuXov5tgM8YS7A6j1ZpSDvbc0rcu11ljf6 | Seçili: Hayır | Ad: FTB 90
+API Token: MCYGLSUqIkxWIyXULHjOHOimFtP3dx-GkUF5DQQx4Rq | Seçili: Hayır | Ad: Final X
+API Token: 9PaZT0_kPVvh0391TyjNupSNYYuCWKNTcyEJpVAO6zy | Seçili: Hayır | Ad: Dizi Full
+API Token: PU7CnHGT3oC6M-6NLcLnPkpecTwn7dR6eh5DjTF8gT5 | Seçili: Hayır | Ad: Partners
+API Token: ntNDCHSZVgfvlwX18HDRd0J7Lt0JXpIU-17Rl7pRh-U | Seçili: Evet | Ad: Meltem Pau
+API Token: Raqb9jHMOYn-RGK9_75CUPxOZ-LilGOMnwCNzqgUqjK | Seçili: Hayır | Ad: mohitoshortsai
+API Token: _Z5yc5dd8IZnOxy9TCHr2tVVarD5t9MSTBJuRtsiRYk | Seçili: Hayır | Ad: altf4
+API Token: DDRHN469Nx0XJWpAe_zyzukm07tp7Lx1mkHegt0nt6G | Seçili: Hayır | Ad: Dizi Hd
+API Token: 7BHW67IGYv1x5HPKKNvnG4zDBc3hVPJV6Lnsg_WsS9D | Seçili: Hayır | Ad: molino
+API Token: hkJtU-VEfWjgkNnB8mzvY0QptbYdwtjDoDtXElgPW-D | Seçili: Hayır | Ad: pokito
+API Token: bOXdtvwOqZpunkpPqxztGe4tdfi1vcBMt4DnhEQdlJD | Seçili: Hayır | Ad: sc goals

@@ -90,7 +90,7 @@ def main():
             + "            if _idx in selected_source_indices:\n"
             + "                filtered_videos.append(_path)\n"
             + "        mp4_dosyalar = filtered_videos\n"
-            + "        print('\\n[INFO] App seçimine göre kaynak videolar filtrelendi.')\n"
+            + "        print('\n[INFO] App seçimine göre kaynak videolar filtrelendi.')\n"
             + "        print('[INFO] Seçilen indeksler: ' + ','.join(str(x) for x in selected_source_indices))\n"
         )
         if marker in source:

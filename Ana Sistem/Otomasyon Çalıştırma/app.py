@@ -1,3 +1,4 @@
+import importlib.util
 import os, json, time, sys, subprocess, shutil, glob, re, textwrap
 import streamlit as st
 import streamlit.components.v1 as _st_components
@@ -9,10 +10,89 @@ except ImportError:
 
 st.set_page_config(page_title="Otomasyon Paneli", layout="wide")
 
+def _reset_complex_dialog_lazy_state(dialog_key: str | None = None) -> None:
+    target = str(dialog_key or "").strip()
+    reset_all = not target
+
+    if reset_all or target in {"toplu_video", "tv_asset_manager"}:
+        st.session_state.pop("_tv_preset_loaded", None)
+
+    if reset_all or target in {"video_montaj", "vm_asset_manager"}:
+        st.session_state.pop("_vm_preset_loaded", None)
+
+    if reset_all or target == "sosyal_medya":
+        st.session_state.pop("sm_video_kaynak_secim_loaded", None)
+        st.session_state.pop("sm_last_hesap_mode_rendered", None)
+
+def _keep_ek_dialog_open_on_rerun(dialog_key: str | None) -> bool:
+    if dialog_key in {"video_ekle", "video_bolumle"}:
+        return True
+    return st.session_state.get("_ek_dialog_keepalive") == dialog_key
+
+
+def _request_ek_dialog_open(dialog_key: str) -> None:
+    _reset_complex_dialog_lazy_state(dialog_key)
+    st.session_state.ek_dialog_open = dialog_key
+    st.session_state._ek_dialog_keepalive = dialog_key
+
+
+def _reset_video_bolum_temp(remove_file: bool = False):
+    temp_path = st.session_state.get("video_bolum_temp_path")
+    if remove_file and temp_path:
+        try:
+            split_dir = os.path.abspath(os.path.join(CONTROL_DIR, "_temp_video_split"))
+            temp_abs = os.path.abspath(str(temp_path))
+            if temp_abs.startswith(split_dir) and os.path.isfile(temp_abs):
+                os.remove(temp_abs)
+        except Exception:
+            pass
+    st.session_state.video_bolum_temp_path = None
+    st.session_state.video_bolum_temp_name = None
+    st.session_state.video_bolum_source_kind = "file"
+    st.session_state.video_bolum_source_no = None
+    st.session_state.video_bolum_source_url = ""
+    st.session_state.video_bolum_source_title = ""
+    st.session_state.video_bolum_source_duration = 0.0
+    st.session_state.video_bolum_preview_url = ""
+    st.session_state.pop("_dlg_bolum_pending_updates", None)
+    st.session_state.pop("_bolum_sayisi_prev", None)
+    st.session_state.pop("_bolum_sure_secim", None)
+    st.session_state.pop("_video_bolum_init_token", None)
+    st.session_state.pop("dlg_bolum_playback_rate", None)
+    st.session_state.pop("dlg_bolum_sayisi", None)
+    for _old_i in range(50):
+        st.session_state.pop(f"dlg_bolum_baslangic_{_old_i}", None)
+        st.session_state.pop(f"dlg_bolum_bitis_{_old_i}", None)
+
+
+def _handle_ek_dialog_dismiss():
+    current_dialog = st.session_state.get("ek_dialog_open")
+    if current_dialog == "video_bolumle":
+        _reset_video_bolum_temp(remove_file=True)
+    _reset_complex_dialog_lazy_state(current_dialog)
+    st.session_state.pop("_ek_dialog_keepalive", None)
+    st.session_state.ek_dialog_open = None
+
+
 # ==========================================
 # 1. AYARLAR VE VERİ YÖNETİMİ
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ANA_SISTEM_ROOT = os.path.dirname(BASE_DIR)
+if ANA_SISTEM_ROOT not in sys.path:
+    sys.path.insert(0, ANA_SISTEM_ROOT)
+
+from transition_utils import (
+    normalize_video_mode as _normalize_transition_video_mode,
+    load_transition_state as _load_transition_state_file,
+    save_transition_state as _save_transition_state_file,
+    is_video_transition_enabled as _is_video_transition_enabled_file,
+    video_model_supports_transition,
+    resolve_transition_pair,
+    resolve_single_image,
+    replace_folder_images_with_standard_images,
+)
+
 CONTROL_DIR = os.path.join(BASE_DIR, ".control")
 os.makedirs(CONTROL_DIR, exist_ok=True)
 SETTINGS_PATH = os.path.join(CONTROL_DIR, "settings.local.json")
@@ -31,13 +111,20 @@ SORA2_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşt
 KLING30_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Kling 3.0\kling_30.py"
 KLINGO3_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Kling O3\kling_o3.py"
 SEEDANCE20_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Seedance 2.0\seedance 2.0.py"
+HAPPY_HORSE_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Happy Horse 1.0\happy_horse_1.0.py"
 V56_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Pixverse\pixverse_v56.py"
 VEO31_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Veo\pixverse_veo31.py"
 GROK_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Grok\pixverse_grok.py"
 C1_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Oluşturma\Pixverse C1\pixverse_c1.py"
-VIDEO_MODEL_OPTIONS = ["Sora 2", "Kling 3.0", "Kling O3", "Seedance 2.0", "Veo 3.1 Standard", "Grok", "PixVerse V6", "PixVerse Cinematic"]
+MODIFY_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Klonla\modify.py"
+MOTION_CONTROL_SCRIPT_DEFAULT = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video Klonla\motion_control.py"
+VIDEO_KLONLA_CONTROL_PATH = os.path.join(CONTROL_DIR, "video_klonla_state.json")
+VIDEO_KLONLA_RUNTIME_PATH = os.path.join(CONTROL_DIR, "video_klonla_runtime.json")
+VIDEO_KLONLA_UPLOAD_DIR = os.path.join(CONTROL_DIR, "video_klonla_uploads")
+VIDEO_MODEL_OPTIONS = ["Happy Horse 1.0", "Sora 2", "Kling 3.0", "Kling O3", "Seedance 2.0", "Veo 3.1 Standard", "Grok", "PixVerse V6", "PixVerse Cinematic"]
 PIXVERSE_IMAGE_MODEL_OPTIONS = [
     "Qwen Image",
+    "GPT Image 2",
     "Nano Banana 2",
     "Nano Banana Pro",
     "Nano Banana",
@@ -51,6 +138,7 @@ PIXVERSE_IMAGE_QUALITY_OPTIONS = ["Standart", "Yüksek", "Maksimum"]
 PIXVERSE_IMAGE_ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS = [
     "Qwen Image",
+    "GPT Image 2",
     "Nano Banana 2",
     "Nano Banana Pro",
     "Nano Banana",
@@ -61,12 +149,51 @@ PIXVERSE_IMAGE_CLONE_MODEL_OPTIONS = [
 ]
 DEFAULT_GORSEL_MODEL = "Nano Banana 2"
 DEFAULT_GORSEL_KLONLAMA_MODEL = "Kling O3"
+TRANSLATION_MODEL = "gemini-2.5-flash"
+PROMPT_TEMPLATE_PRESETS = [
+    {"key": "original", "label": "Orjinal", "filename": "istem.txt"},
+    {"key": "realistic", "label": "Gerçekçi", "filename": "photorealistic_real_life.txt"},
+    {"key": "cinematic", "label": "Sinematik", "filename": "cinematic.txt"},
+    {"key": "animation", "label": "Animasyon", "filename": "cinematic_animation.txt"},
+    {"key": "anime", "label": "Anime", "filename": "anime.txt"},
+]
+PROMPT_TEMPLATE_KEYS = {item["key"] for item in PROMPT_TEMPLATE_PRESETS}
+
+
+def _normalize_prompt_template_key(value, default_value="original"):
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "original": "original",
+        "orjinal": "original",
+        "orijinal": "original",
+        "istem": "original",
+        "istem.txt": "original",
+        "realistic": "realistic",
+        "gercekci": "realistic",
+        "gerçekçi": "realistic",
+        "photorealistic": "realistic",
+        "photorealistic_real_life": "realistic",
+        "photorealistic_real_life.txt": "realistic",
+        "cinematic": "cinematic",
+        "sinematik": "cinematic",
+        "cinematic.txt": "cinematic",
+        "animation": "animation",
+        "animasyon": "animation",
+        "cinematic_animation": "animation",
+        "cinematic_animation.txt": "animation",
+        "anime": "anime",
+        "anime.txt": "anime",
+    }
+    fallback = default_value if default_value in PROMPT_TEMPLATE_KEYS else "original"
+    return aliases.get(raw, fallback)
 
 
 def _normalize_pixverse_image_model(model_value, default_model=None):
     value = str(model_value or "").strip().lower()
     if value in {"qwen image", "qwen-image", "qwenimage"}:
         return "Qwen Image"
+    if value in {"gpt image 2", "gptimage2", "gpt-image-2", "gpt-image-2.0", "cpt image 2", "cptimage2", "cpt-image-2", "cpt-image-2.0"}:
+        return "GPT Image 2"
     if value in {"nano banana 2", "nanobanana2", "gemini-3.1-flash"}:
         return "Nano Banana 2"
     if value in {"nano banana pro", "nanobananapro", "gemini-3.0"}:
@@ -121,15 +248,21 @@ DEFAULT_SETTINGS = {
     "video_indir_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Video İndirme\video_indir.py",
     "youtube_link_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Youtube Link\youtube_link.py",
     "prompt_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\prompt.py",
+    "prompt_istem_txt": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\istem.txt",
+    "prompt_template_key": "original",
     "video_model": "Sora 2",
     "sora2_script": SORA2_SCRIPT_DEFAULT,
     "kling30_script": KLING30_SCRIPT_DEFAULT,
     "klingo3_script": KLINGO3_SCRIPT_DEFAULT,
     "seedance20_script": SEEDANCE20_SCRIPT_DEFAULT,
+    "happy_horse_script": HAPPY_HORSE_SCRIPT_DEFAULT,
     "v56_script": V56_SCRIPT_DEFAULT,
     "veo31_script": VEO31_SCRIPT_DEFAULT,
     "grok_script": GROK_SCRIPT_DEFAULT,
     "c1_script": C1_SCRIPT_DEFAULT,
+    "video_klonla_modify_script": MODIFY_SCRIPT_DEFAULT,
+    "video_klonla_motion_script": MOTION_CONTROL_SCRIPT_DEFAULT,
+    "video_klonla_dir": r"C:\Users\User\Desktop\Otomasyon\Klon Video",
     "pixverse_script": SORA2_SCRIPT_DEFAULT,
     "nano_banana2_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\nano_banana2.py",
     "nano_banana_pro_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\nano_banana_pro.py",
@@ -137,6 +270,7 @@ DEFAULT_SETTINGS = {
     "seedream_50_lite_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\seedream_5.0-lite.py",
     "seedream_45_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\seedream_4.5.py",
     "qwen_image_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\qwen_image.py",
+    "gpt_image_2_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\gpt_image_2.py",
     "gorsel_olustur_dir": r"C:\Users\User\Desktop\Otomasyon\Görsel\Görseller",
     "analiz_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Analiz\analiz.py",
     "gorsel_klonlama_script": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluştur\görsel_klonlama.py",
@@ -168,6 +302,20 @@ DEFAULT_SETTINGS = {
     "sosyal_medya_zamanlama_txt": r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Sosyal Medya Paylaşım\paylaşım_zamanlama.txt",
 }
 
+
+def _get_prompt_template_options(settings_obj: dict | None = None) -> list:
+    src = settings_obj if isinstance(settings_obj, dict) else st.session_state.get("settings", {})
+    prompt_script = str((src or {}).get("prompt_script") or DEFAULT_SETTINGS.get("prompt_script") or "").strip()
+    prompt_root = os.path.dirname(prompt_script) if prompt_script else r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma"
+    original_path = str((src or {}).get("prompt_istem_txt") or os.path.join(prompt_root, "istem.txt")).strip()
+
+    out = []
+    for item in PROMPT_TEMPLATE_PRESETS:
+        meta = dict(item)
+        meta["path"] = original_path if item["key"] == "original" else os.path.join(prompt_root, item["filename"])
+        out.append(meta)
+    return out
+
 def _normalize_video_model(model_value, pixverse_script_path=""):
     value = str(model_value or "").strip().lower()
     if value in {"sora 2", "sora2", "sora-2"}:
@@ -178,6 +326,8 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
         return "Kling O3"
     if value in {"seedance 2.0", "seedance2.0", "seedance20", "seedance-2.0", "seedance 2"}:
         return "Seedance 2.0"
+    if value in {"happy horse 1.0", "happyhorse 1.0", "happyhorse-1.0", "happy horse", "happyhorse"}:
+        return "Happy Horse 1.0"
     if value in {"pixverse v6", "pixversev6", "v6", "pixverse v5.6", "v5.6", "v56", "pixverse", "pixverse video", "pv"}:
         return "PixVerse V6"
     if value in {"pixverse cinematik", "pixversecinematik", "pixverse c1", "pixverse-c1", "c1", "cinematik", "pixverse cinematic", "cinematic"}:
@@ -192,6 +342,7 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
     if value in {"seedream 5.0 lite", "seedream5.0lite"}: return "Seedream 5.0 Lite"
     if value in {"seedream 4.5", "seedream4.5"}: return "Seedream 4.5"
     if value in {"qwen image", "qwenimage"}: return "Qwen Image"
+    if value in {"gpt image 2", "gptimage2", "gpt-image-2", "gpt-image-2.0", "cpt image 2", "cptimage2", "cpt-image-2", "cpt-image-2.0"}: return "GPT Image 2"
 
     script_name = os.path.basename(str(pixverse_script_path or "")).strip().lower()
     if script_name == "pixverse_sora2.py":
@@ -202,6 +353,8 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
         return "Kling O3"
     if script_name in {"seedance 2.0.py", "seedance_2_0.py"}:
         return "Seedance 2.0"
+    if script_name in {"happy_horse_1.0.py", "happy_horse_10.py"}:
+        return "Happy Horse 1.0"
     if script_name in {"pixverse_v56.py", "pixverse_v6.py"}:
         return "PixVerse V6"
     if script_name == "pixverse_c1.py":
@@ -216,6 +369,7 @@ def _normalize_video_model(model_value, pixverse_script_path=""):
     if script_name == "seedream_5.0-lite.py": return "Seedream 5.0 Lite"
     if script_name == "seedream_4.5.py": return "Seedream 4.5"
     if script_name == "qwen_image.py": return "Qwen Image"
+    if script_name in {"gpt_image_2.py", "cpt_image_2.py"}: return "GPT Image 2"
     return DEFAULT_SETTINGS["video_model"]
 
 
@@ -230,6 +384,8 @@ def get_active_video_script(settings: dict) -> str:
         return (settings.get("klingo3_script") or KLINGO3_SCRIPT_DEFAULT).strip()
     if model_name == "Seedance 2.0":
         return (settings.get("seedance20_script") or SEEDANCE20_SCRIPT_DEFAULT).strip()
+    if model_name == "Happy Horse 1.0":
+        return (settings.get("happy_horse_script") or HAPPY_HORSE_SCRIPT_DEFAULT).strip()
     if model_name == "PixVerse V6":
         return (settings.get("v56_script") or V56_SCRIPT_DEFAULT).strip()
     if model_name == "PixVerse Cinematic":
@@ -244,6 +400,7 @@ def get_active_video_script(settings: dict) -> str:
     if model_name == "Seedream 5.0 Lite": return settings.get("seedream_50_lite_script", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\seedream_5.0-lite.py").strip()
     if model_name == "Seedream 4.5": return settings.get("seedream_45_script", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\seedream_4.5.py").strip()
     if model_name == "Qwen Image": return settings.get("qwen_image_script", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\qwen_image.py").strip()
+    if model_name == "GPT Image 2": return settings.get("gpt_image_2_script", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluşturma\gpt_image_2.py").strip()
     return (settings.get("sora2_script") or SORA2_SCRIPT_DEFAULT).strip()
 
 
@@ -274,6 +431,18 @@ def get_video_generation_loading_text(settings: dict | None = None) -> str:
 
 def get_video_generation_canvas_subtitle(settings: dict | None = None) -> str:
     return f"{get_active_video_model(settings)} ile video oluştur"
+
+
+def get_workflow_video_generation_title(settings: dict | None = None) -> str:
+    if _video_klonla_is_active():
+        return "Klon Video Üret"
+    return get_video_generation_title(settings)
+
+
+def get_workflow_video_generation_canvas_subtitle(settings: dict | None = None) -> str:
+    if _video_klonla_is_active():
+        return "Motion Control / Modify ile klon video oluştur"
+    return get_video_generation_canvas_subtitle(settings)
 
 
 def load_settings():
@@ -314,10 +483,15 @@ def load_settings():
         out.get("gorsel_klonlama_boyutu") or out.get("gorsel_boyutu"),
         "16:9",
     )
+    out["prompt_template_key"] = _normalize_prompt_template_key(
+        out.get("prompt_template_key"),
+        "original",
+    )
     out["sora2_script"] = SORA2_SCRIPT_DEFAULT
     out["kling30_script"] = KLING30_SCRIPT_DEFAULT
     out["klingo3_script"] = KLINGO3_SCRIPT_DEFAULT
     out["seedance20_script"] = SEEDANCE20_SCRIPT_DEFAULT
+    out["happy_horse_script"] = HAPPY_HORSE_SCRIPT_DEFAULT
     out["v56_script"] = V56_SCRIPT_DEFAULT
     out["veo31_script"] = VEO31_SCRIPT_DEFAULT
     out["grok_script"] = GROK_SCRIPT_DEFAULT
@@ -356,10 +530,15 @@ def save_settings(s: dict):
         data.get("gorsel_klonlama_boyutu") or data.get("gorsel_boyutu"),
         "16:9",
     )
+    data["prompt_template_key"] = _normalize_prompt_template_key(
+        data.get("prompt_template_key"),
+        "original",
+    )
     data["sora2_script"] = SORA2_SCRIPT_DEFAULT
     data["kling30_script"] = KLING30_SCRIPT_DEFAULT
     data["klingo3_script"] = KLINGO3_SCRIPT_DEFAULT
     data["seedance20_script"] = SEEDANCE20_SCRIPT_DEFAULT
+    data["happy_horse_script"] = HAPPY_HORSE_SCRIPT_DEFAULT
     data["v56_script"] = V56_SCRIPT_DEFAULT
     data["veo31_script"] = VEO31_SCRIPT_DEFAULT
     data["grok_script"] = GROK_SCRIPT_DEFAULT
@@ -368,7 +547,7 @@ def save_settings(s: dict):
     json.dump(data, open(SETTINGS_PATH, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 
 if "settings" not in st.session_state: st.session_state.settings = load_settings()
-if "status" not in st.session_state: st.session_state.status = {"input":"idle","youtube_link":"idle","download":"idle","analyze":"idle","pixverse":"idle","gorsel_analiz":"idle","gorsel_klonlama":"idle","gorsel_olustur":"idle","prompt_duzeltme":"idle","video_montaj":"idle","toplu_video":"idle","sosyal_medya":"idle","kredi_kazan":"idle","kredi_cek":"idle"}
+if "status" not in st.session_state: st.session_state.status = {"input":"idle","youtube_link":"idle","download":"idle","analyze":"idle","pixverse":"idle","video_klonla":"idle","gorsel_analiz":"idle","gorsel_klonlama":"idle","gorsel_olustur":"idle","prompt_duzeltme":"idle","video_montaj":"idle","toplu_video":"idle","sosyal_medya":"idle","kredi_kazan":"idle","kredi_cek":"idle"}
 if "logs" not in st.session_state: st.session_state.logs =[]
 if "ui_placeholders" not in st.session_state: st.session_state.ui_placeholders = {}
 
@@ -379,7 +558,184 @@ if "batch_queue" not in st.session_state: st.session_state.batch_queue = []
 if "batch_queue_idx" not in st.session_state: st.session_state.batch_queue_idx = 0
 # Ek İşlemler → Tümünü Çalıştır seçimleri
 if "ek_batch_secimler" not in st.session_state:
-    st.session_state.ek_batch_secimler = {"video_indir": True, "gorsel_analiz": False, "gorsel_klonla": False, "gorsel_olustur": False, "prompt_duzeltme": False, "video_montaj": False, "toplu_video": False, "sosyal_medya": False}
+    st.session_state.ek_batch_secimler = {"video_indir": False, "gorsel_analiz": False, "gorsel_klonla": False, "gorsel_olustur": False, "video_klonla": False, "prompt_duzeltme": False, "video_montaj": False, "toplu_video": False, "sosyal_medya": False}
+BATCH_RUN_MODE_AUTO = "Otomatik Seçim"
+BATCH_RUN_MODE_MANUAL = "Manual Seçim"
+BATCH_RUN_MODE_STATE_KEY = "batch_run_mode_value"
+BATCH_RUN_MODE_WIDGET_KEY = "batch_run_mode_widget"
+BATCH_SELECTION_DEFAULTS = {
+    "video_indir": False,
+    "gorsel_analiz": False,
+    "gorsel_klonla": False,
+    "gorsel_olustur": False,
+    "video_klonla": False,
+    "analyze": False,
+    "prompt_duzeltme": False,
+    "pixverse": False,
+    "video_montaj": False,
+    "toplu_video": False,
+    "sosyal_medya": False,
+}
+BATCH_SELECTION_QUEUE_MAP = {
+    "video_indir": "download",
+    "gorsel_analiz": "gorsel_analiz",
+    "gorsel_klonla": "gorsel_klonlama",
+    "gorsel_olustur": "gorsel_olustur",
+    "video_klonla": "video_klonla",
+    "analyze": "analyze",
+    "prompt_duzeltme": "prompt_duzeltme",
+    "pixverse": "pixverse",
+    "video_montaj": "video_montaj",
+    "toplu_video": "toplu_video",
+    "sosyal_medya": "sosyal_medya",
+}
+BATCH_SELECTION_UI_ORDER = tuple(BATCH_SELECTION_DEFAULTS.keys())
+BATCH_SELECTION_LABELS = {
+    "video_indir": "Video İndir",
+    "gorsel_analiz": "Görsel Analiz",
+    "gorsel_klonla": "Görsel Klonla",
+    "gorsel_olustur": "Görsel Oluştur",
+    "video_klonla": "Video Klonla",
+    "analyze": "Prompt Oluştur",
+    "prompt_duzeltme": "Prompt Düzeltme",
+    "video_montaj": "Video Montaj",
+    "toplu_video": "Toplu Video Montaj",
+    "sosyal_medya": "Sosyal Medya Paylaşım",
+}
+if BATCH_RUN_MODE_STATE_KEY not in st.session_state:
+    st.session_state[BATCH_RUN_MODE_STATE_KEY] = st.session_state.get("batch_run_mode", BATCH_RUN_MODE_AUTO)
+if "batch_manual_selection_order" not in st.session_state:
+    st.session_state.batch_manual_selection_order = []
+
+
+def _get_batch_run_mode() -> str:
+    value = st.session_state.get(BATCH_RUN_MODE_STATE_KEY, BATCH_RUN_MODE_AUTO)
+    if value not in (BATCH_RUN_MODE_AUTO, BATCH_RUN_MODE_MANUAL):
+        value = BATCH_RUN_MODE_AUTO
+    st.session_state[BATCH_RUN_MODE_STATE_KEY] = value
+    return value
+
+
+def _sync_batch_run_mode_widget() -> None:
+    value = st.session_state.get(BATCH_RUN_MODE_WIDGET_KEY, BATCH_RUN_MODE_AUTO)
+    if value not in (BATCH_RUN_MODE_AUTO, BATCH_RUN_MODE_MANUAL):
+        value = BATCH_RUN_MODE_AUTO
+    st.session_state[BATCH_RUN_MODE_STATE_KEY] = value
+
+
+def _ensure_batch_selection_state() -> dict:
+    secs = st.session_state.get("ek_batch_secimler", {})
+    if not isinstance(secs, dict):
+        secs = {}
+    for key, default_value in BATCH_SELECTION_DEFAULTS.items():
+        secs.setdefault(key, default_value)
+    st.session_state.ek_batch_secimler = secs
+
+    _get_batch_run_mode()
+
+    order = st.session_state.get("batch_manual_selection_order", [])
+    if not isinstance(order, list):
+        order = []
+    order = [key for key in order if key in BATCH_SELECTION_QUEUE_MAP and secs.get(key, False)]
+    for key in BATCH_SELECTION_UI_ORDER:
+        if secs.get(key, False) and key not in order:
+            order.append(key)
+    st.session_state.batch_manual_selection_order = order
+    return secs
+
+
+def _on_batch_selection_change(selection_key: str, widget_key: str) -> None:
+    secs = _ensure_batch_selection_state()
+    selected = bool(st.session_state.get(widget_key, False))
+    secs[selection_key] = selected
+    order = [
+        key
+        for key in st.session_state.get("batch_manual_selection_order", [])
+        if key != selection_key and secs.get(key, False)
+    ]
+    if selected:
+        order.append(selection_key)
+    st.session_state.batch_manual_selection_order = order
+
+
+def _batch_selection_checkbox(selection_key: str, label: str, widget_key: str, default_value: bool = False) -> bool:
+    secs = _ensure_batch_selection_state()
+    selected = st.checkbox(
+        label,
+        value=bool(secs.get(selection_key, default_value)),
+        key=widget_key,
+        label_visibility="collapsed",
+        on_change=_on_batch_selection_change,
+        args=(selection_key, widget_key),
+    )
+    secs[selection_key] = bool(selected)
+    return bool(selected)
+
+
+def _is_manual_batch_selection() -> bool:
+    return _get_batch_run_mode() == BATCH_RUN_MODE_MANUAL
+
+
+def _build_auto_batch_queue(secs: dict) -> list[str]:
+    queue = []
+    aktif_prompt_kaynagi = _get_prompt_runtime_source_mode()
+    prompt_source = _resolve_video_prompt_source_for_generation()
+    gorsel_motion_prompt_aktif = secs.get("gorsel_olustur", False) and prompt_source.get("kind") == "gorsel_motion"
+    video_klonla_secili = secs.get("video_klonla", False)
+    bolum_plani_var = bool(globals().get("_has_video_bolum_link_plans", lambda: False)())
+    if secs.get("video_indir", False) and _count_prompt_links() > 0 and (aktif_prompt_kaynagi == PROMPT_SOURCE_LINK or bolum_plani_var):
+        queue.append("download")
+    if secs.get("gorsel_analiz", False):
+        queue.append("gorsel_analiz")
+    if secs.get("gorsel_klonla", False):
+        queue.append("gorsel_klonlama")
+    if secs.get("gorsel_olustur", False):
+        queue.append("gorsel_olustur")
+
+    if video_klonla_secili:
+        queue.append("video_klonla")
+    else:
+        skip_analyze = gorsel_motion_prompt_aktif
+        if not skip_analyze:
+            queue.append("analyze")
+            if secs.get("prompt_duzeltme", False):
+                queue.append("prompt_duzeltme")
+        queue.append("pixverse")
+    if secs.get("video_montaj", False):
+        queue.append("video_montaj")
+    if secs.get("toplu_video", False):
+        queue.append("toplu_video")
+    if secs.get("sosyal_medya", False):
+        queue.append("sosyal_medya")
+    return queue
+
+
+def _build_manual_batch_queue(secs: dict) -> list[str]:
+    _ensure_batch_selection_state()
+    queue = []
+    for selection_key in st.session_state.get("batch_manual_selection_order", []):
+        if not secs.get(selection_key, False):
+            continue
+        node_key = BATCH_SELECTION_QUEUE_MAP.get(selection_key)
+        if node_key and node_key not in queue:
+            queue.append(node_key)
+    return queue
+
+
+def _manual_batch_order_text() -> str:
+    secs = _ensure_batch_selection_state()
+    labels = []
+    for selection_key in st.session_state.get("batch_manual_selection_order", []):
+        if not secs.get(selection_key, False):
+            continue
+        if selection_key == "pixverse":
+            labels.append(get_video_generation_label(emoji=False))
+        else:
+            labels.append(BATCH_SELECTION_LABELS.get(selection_key, selection_key))
+    return " → ".join(labels)
+
+
+_ensure_batch_selection_state()
 if "controls_unlocked" not in st.session_state: st.session_state.controls_unlocked = False
 if "batch_paused" not in st.session_state: st.session_state.batch_paused = False
 if "batch_finish_requested" not in st.session_state: st.session_state.batch_finish_requested = False
@@ -405,6 +761,7 @@ if "bg_log_pos" not in st.session_state: st.session_state.bg_log_pos = 0
 if "bg_log_start_index" not in st.session_state: st.session_state.bg_log_start_index = 0
 if "bg_log_fh" not in st.session_state: st.session_state.bg_log_fh = None
 if "bg_last_result" not in st.session_state: st.session_state.bg_last_result = None
+if "panel_shutdown_requested" not in st.session_state: st.session_state.panel_shutdown_requested = False
 
 # Dialog Durumları ve Hizalama Hafızası
 if "ek_dialog_open" not in st.session_state: st.session_state.ek_dialog_open = None
@@ -421,6 +778,7 @@ if "toplu_video_format" not in st.session_state: st.session_state.toplu_video_fo
 if "toplu_video_selection_text" not in st.session_state: st.session_state.toplu_video_selection_text = "T"
 if "toplu_video_source_selection_text" not in st.session_state: st.session_state.toplu_video_source_selection_text = "T"
 if "toplu_video_source_mode" not in st.session_state: st.session_state.toplu_video_source_mode = "Mevcut Videolar"
+if "toplu_video_production_limit" not in st.session_state: st.session_state.toplu_video_production_limit = 0
 if "tv_muzik_seviyesi" not in st.session_state: st.session_state.tv_muzik_seviyesi = "15"
 if "tv_ses_efekti_seviyesi" not in st.session_state: st.session_state.tv_ses_efekti_seviyesi = "15"
 if "tv_baslik" not in st.session_state: st.session_state.tv_baslik = ""
@@ -440,14 +798,863 @@ if "kredi_cek_start_ts" not in st.session_state: st.session_state.kredi_cek_star
 if "video_bolum_sureler" not in st.session_state: st.session_state.video_bolum_sureler = []
 if "video_bolum_temp_path" not in st.session_state: st.session_state.video_bolum_temp_path = None
 if "video_bolum_temp_name" not in st.session_state: st.session_state.video_bolum_temp_name = None
+if "video_bolum_source_kind" not in st.session_state: st.session_state.video_bolum_source_kind = "file"
+if "video_bolum_source_no" not in st.session_state: st.session_state.video_bolum_source_no = None
+if "video_bolum_source_url" not in st.session_state: st.session_state.video_bolum_source_url = ""
+if "video_bolum_source_title" not in st.session_state: st.session_state.video_bolum_source_title = ""
+if "video_bolum_source_duration" not in st.session_state: st.session_state.video_bolum_source_duration = 0.0
+if "video_bolum_preview_url" not in st.session_state: st.session_state.video_bolum_preview_url = ""
 if "video_bolum_saved_notice" not in st.session_state: st.session_state.video_bolum_saved_notice = None
+if "video_bolum_duzen_modu" not in st.session_state: st.session_state.video_bolum_duzen_modu = "Otomatik"
 if "pixverse_prompt_override_meta" not in st.session_state: st.session_state.pixverse_prompt_override_meta = None
 if "go_mode_val" not in st.session_state: st.session_state["go_mode_val"] = "Görsel"
 if "go_motion_prompt_saved" not in st.session_state: st.session_state["go_motion_prompt_saved"] = False
+if "video_klonla_saved" not in st.session_state: st.session_state["video_klonla_saved"] = False
+if "video_klonla_mode_val" not in st.session_state: st.session_state["video_klonla_mode_val"] = "Video"
+if "video_klonla_model_val" not in st.session_state: st.session_state["video_klonla_model_val"] = "Motion Control"
+if "video_klonla_system_images" not in st.session_state: st.session_state["video_klonla_system_images"] = True
 
 GORSEL_HAREKET_PROMPT_DIR = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görsel Hareklendirme Prompt"
 GORSEL_HAREKET_REFERANS_DIR = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görseller"
 GORSEL_OLUSTUR_STATE_PATH = os.path.join(CONTROL_DIR, "gorsel_olustur_state.json")
+
+def _load_transition_ui_state() -> dict:
+    return _load_transition_state_file(CONTROL_DIR)
+
+
+def _save_transition_ui_state(updates: dict | None = None) -> dict:
+    return _save_transition_state_file(CONTROL_DIR, updates or {})
+
+
+def _is_video_transition_mode() -> bool:
+    return _is_video_transition_enabled_file(CONTROL_DIR)
+
+
+def _is_section_transition_mode(section_key: str) -> bool:
+    return bool(_load_transition_ui_state().get(section_key, False))
+
+
+def _video_mode_option_label(mode_value: str | None) -> str:
+    return "Start End Frame (Transition)" if _normalize_transition_video_mode(mode_value) == "transition" else "Normal Video"
+
+
+def _video_mode_option_value(option_label: str) -> str:
+    raw = str(option_label or "").casefold()
+    return "transition" if "transition" in raw or "start end" in raw else "normal"
+
+
+def _get_video_generation_mode_text() -> str:
+    return "Transition Video" if _is_video_transition_mode() else "Video"
+
+
+def _video_klonla_default_state() -> dict:
+    return {
+        "mode": "Video",
+        "clone_model": "Motion Control",
+        "modify_prompt": "",
+        "selected_videos": [],
+        "uploaded_videos": [],
+        "selected_image": "",
+        "uploaded_image": "",
+        "use_system_images": True,
+        "system_image_sources": ["gorsel_analiz", "gorsel_klonla", "gorsel_olustur"],
+        "motion_model": "v5.6",
+        "motion_quality": "720p",
+        "modify_model": "v5.5",
+        "modify_quality": "720p",
+        "modify_keyframe_time": 0,
+        "tasks": {},
+    }
+
+
+def _load_video_klonla_state() -> dict:
+    state = _video_klonla_default_state()
+    try:
+        if os.path.exists(VIDEO_KLONLA_CONTROL_PATH):
+            with open(VIDEO_KLONLA_CONTROL_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                state.update(data)
+    except Exception:
+        pass
+    if not isinstance(state.get("tasks"), dict):
+        state["tasks"] = {}
+    return state
+
+
+def _save_video_klonla_state(data: dict):
+    state = _video_klonla_default_state()
+    if isinstance(data, dict):
+        state.update(data)
+    try:
+        with open(VIDEO_KLONLA_CONTROL_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"[WARN] Video Klonla durumu kaydedilemedi: {e}")
+
+
+def _video_klonla_upload_root(kind: str) -> str:
+    root = os.path.join(VIDEO_KLONLA_UPLOAD_DIR, kind)
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _video_klonla_safe_name(name: str) -> str:
+    base = os.path.basename(str(name or "").strip())
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base) or f"file_{int(time.time())}"
+
+
+def _video_klonla_persist_uploaded_files(uploaded_files, kind: str) -> list[str]:
+    saved = []
+    if not uploaded_files:
+        return saved
+    if not isinstance(uploaded_files, (list, tuple)):
+        uploaded_files = [uploaded_files]
+    root = _video_klonla_upload_root(kind)
+    for uf in uploaded_files:
+        if uf is None:
+            continue
+        try:
+            safe = _video_klonla_safe_name(getattr(uf, "name", "upload.bin"))
+            stem, ext = os.path.splitext(safe)
+            target = os.path.join(root, safe)
+            sayac = 1
+            while os.path.exists(target):
+                target = os.path.join(root, f"{stem}_{sayac}{ext}")
+                sayac += 1
+            with open(target, "wb") as f:
+                f.write(uf.getbuffer())
+            saved.append(target)
+        except Exception as e:
+            log(f"[WARN] Video Klonla yüklenen dosya kaydedilemedi: {e}")
+    return saved
+
+
+def _video_klonla_clear_uploads():
+    try:
+        shutil.rmtree(VIDEO_KLONLA_UPLOAD_DIR, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def _video_klonla_existing_paths(paths) -> list[str]:
+    out = []
+    for p in (paths or []):
+        p = str(p or "").strip()
+        if p and os.path.exists(p):
+            out.append(p)
+    return out
+
+
+def _video_klonla_tasks_dict(state: dict | None) -> dict:
+    tasks = (state or {}).get("tasks")
+    return tasks if isinstance(tasks, dict) else {}
+
+
+def _video_klonla_task_key(source_group: str, item_no: int) -> str:
+    safe_source = re.sub(r"[^a-z0-9]+", "_", str(source_group or "item").lower()).strip("_") or "item"
+    try:
+        safe_no = int(item_no or 0)
+    except Exception:
+        safe_no = 0
+    return f"{safe_source}_{safe_no}" if safe_no > 0 else safe_source
+
+
+def _video_klonla_saved_direct_video_paths(state: dict) -> list[str]:
+    direct_paths = _video_klonla_existing_paths((state or {}).get("uploaded_videos"))
+    direct_paths += _video_klonla_existing_paths((state or {}).get("selected_videos"))
+    return list(dict.fromkeys(p for p in direct_paths if p))
+
+
+def _video_klonla_local_sort_key(value: str):
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(value or ""))]
+
+
+def _video_klonla_scan_video_entries(root_path: str, source_kind: str = "") -> list[dict]:
+    valid_exts = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
+    if not root_path or not os.path.isdir(root_path):
+        return []
+    try:
+        folders = [name for name in os.listdir(root_path) if os.path.isdir(os.path.join(root_path, name))]
+    except Exception:
+        return []
+    folders.sort(key=_video_klonla_local_sort_key)
+    out = []
+    for idx, folder_name in enumerate(folders, start=1):
+        folder_path = os.path.join(root_path, folder_name)
+        try:
+            videos = [
+                name for name in os.listdir(folder_path)
+                if os.path.isfile(os.path.join(folder_path, name)) and name.lower().endswith(valid_exts)
+            ]
+        except Exception:
+            videos = []
+        if not videos:
+            continue
+        videos.sort(key=_video_klonla_local_sort_key)
+        video_name = videos[0]
+        match = re.search(r"(\d+)\s*$", folder_name)
+        item_no = int(match.group(1)) if match else idx
+        out.append({
+            "no": item_no,
+            "folder_name": folder_name,
+            "folder_path": folder_path,
+            "video_name": video_name,
+            "video_path": os.path.join(folder_path, video_name),
+            "source_kind": source_kind,
+        })
+    return out
+
+
+def _video_klonla_safe_added_entries() -> list[dict]:
+    for fn_name in ("_list_added_video_preview_entries", "_list_added_video_entries"):
+        added_fn = globals().get(fn_name)
+        if callable(added_fn):
+            try:
+                return added_fn()
+            except Exception:
+                pass
+    added_root = str((st.session_state.get("settings", {}) or {}).get("added_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Eklenen Video").strip()
+    return _video_klonla_scan_video_entries(added_root, "added_video")
+
+
+def _video_klonla_safe_download_entries() -> list[dict]:
+    download_fn = globals().get("_list_download_video_entries")
+    if callable(download_fn):
+        try:
+            return download_fn()
+        except Exception:
+            pass
+    download_root = str((st.session_state.get("settings", {}) or {}).get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
+    return _video_klonla_scan_video_entries(download_root, "download")
+
+
+def _video_klonla_safe_link_source_map() -> dict[int, str]:
+    source_map_fn = globals().get("sosyal_medya_link_kaynak_haritasi")
+    if callable(source_map_fn):
+        try:
+            return source_map_fn()
+        except Exception:
+            pass
+
+    settings_obj = st.session_state.get("settings", {}) or {}
+    links_file = str(settings_obj.get("links_file") or "").strip()
+    link_count = 0
+    if links_file and os.path.exists(links_file):
+        try:
+            with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+                link_count = len([line for line in f.read().splitlines() if line.strip()])
+        except Exception:
+            link_count = 0
+
+    placeholder_active_fn = globals().get("_empty_source_placeholder_active")
+    if callable(placeholder_active_fn):
+        try:
+            placeholder_active = bool(placeholder_active_fn())
+        except Exception:
+            placeholder_active = False
+    else:
+        placeholder_file = globals().get(
+            "EMPTY_SOURCE_PLACEHOLDER_FILE",
+            os.path.join(CONTROL_DIR, "empty_source_placeholder.json"),
+        )
+        placeholder_active = bool(placeholder_file and os.path.exists(str(placeholder_file)))
+
+    if link_count == 0 and placeholder_active:
+        return {1: "placeholder_link"}
+
+    source_map = {idx: "Link" for idx in range(1, link_count + 1)}
+    for entry in _video_klonla_safe_download_entries():
+        try:
+            item_no = int(entry.get("no") or 0)
+        except Exception:
+            item_no = 0
+        if item_no > 0:
+            source_map[item_no] = "İndirilen Video"
+    return dict(sorted(source_map.items()))
+
+
+def _video_klonla_safe_prompt_runtime_source_mode() -> str:
+    runtime_mode_fn = globals().get("_get_prompt_runtime_source_mode")
+    if callable(runtime_mode_fn):
+        try:
+            return runtime_mode_fn()
+        except Exception:
+            pass
+
+    settings_obj = st.session_state.get("settings", {}) or {}
+    mode_path = os.path.join(CONTROL_DIR, "prompt_source_mode.txt")
+    file_mode = "auto"
+    try:
+        if os.path.exists(mode_path):
+            with open(mode_path, "r", encoding="utf-8", errors="ignore") as f:
+                raw_mode = str(f.read() or "").strip().lower()
+            if raw_mode in {"link", "youtube", "manual"}:
+                file_mode = "link"
+            elif raw_mode in {"added_video", "video", "eklenen_video", "eklenen video"}:
+                file_mode = "added_video"
+            elif raw_mode in {"downloaded_video", "download", "indirilen_video", "indirilen video"}:
+                file_mode = "downloaded_video"
+    except Exception:
+        file_mode = "auto"
+
+    links_file = str(settings_obj.get("links_file") or "").strip()
+    link_count = 0
+    if links_file and os.path.exists(links_file):
+        try:
+            with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+                link_count = len([line for line in f.read().splitlines() if line.strip()])
+        except Exception:
+            link_count = 0
+    added_count = len(_video_klonla_safe_added_entries())
+    download_count = len(_video_klonla_safe_download_entries())
+
+    if file_mode == "added_video":
+        return "added_video"
+    if download_count > 0:
+        return "downloaded_video"
+    if link_count > 0:
+        return "link"
+    if added_count > 0:
+        return "added_video"
+    return file_mode
+
+
+def _video_klonla_build_task_targets(uploaded_files=None, saved_paths=None) -> list[dict]:
+    targets = []
+
+    if uploaded_files:
+        if not isinstance(uploaded_files, (list, tuple)):
+            uploaded_files = [uploaded_files]
+        for idx, raw in enumerate(uploaded_files, start=1):
+            file_name = str(getattr(raw, "name", "") or f"Yüklenen Video {idx}").strip()
+            targets.append({
+                "key": _video_klonla_task_key("direct_video", idx),
+                "no": idx,
+                "order": idx,
+                "label": f"Yüklenen Video {idx}",
+                "source_group": "direct_video",
+                "source_label": "Yüklenen Video",
+                "source_kind": "direct_video",
+                "video_path": "",
+                "video_name": file_name,
+            })
+        return targets
+
+    direct_paths = list(dict.fromkeys(p for p in (saved_paths or []) if p))
+    if direct_paths:
+        for idx, path in enumerate(direct_paths, start=1):
+            targets.append({
+                "key": _video_klonla_task_key("direct_video", idx),
+                "no": idx,
+                "order": idx,
+                "label": f"Video {idx}",
+                "source_group": "direct_video",
+                "source_label": "Video",
+                "source_kind": "direct_video",
+                "video_path": path,
+                "video_name": os.path.basename(path),
+            })
+        return targets
+
+    mode = _video_klonla_safe_prompt_runtime_source_mode()
+
+    if mode == "added_video":
+        for idx, entry in enumerate(_video_klonla_safe_added_entries(), start=1):
+            try:
+                item_no = int(entry.get("no") or idx)
+            except Exception:
+                item_no = idx
+            targets.append({
+                "key": _video_klonla_task_key("added_video", item_no),
+                "no": item_no,
+                "order": idx,
+                "label": f"Eklenen Video {item_no}",
+                "source_group": "added_video",
+                "source_label": "Eklenen Video",
+                "source_kind": "added_video",
+                "video_path": str(entry.get("video_path") or "").strip(),
+                "video_name": str(entry.get("video_name") or "").strip(),
+            })
+        return targets
+
+    link_map = _video_klonla_safe_link_source_map()
+    if mode in {"link", "downloaded_video"} and link_map:
+        download_by_no = {}
+        for entry in _video_klonla_safe_download_entries():
+            try:
+                item_no = int(entry.get("no") or 0)
+            except Exception:
+                item_no = 0
+            if item_no > 0:
+                download_by_no[item_no] = str(entry.get("video_path") or "").strip()
+        for order, item_no in enumerate(sorted(link_map), start=1):
+            source_marker = str(link_map.get(item_no) or "").strip()
+            is_placeholder_link = source_marker == "placeholder_link"
+            label_prefix = "İndirilen Video" if source_marker == "İndirilen Video" else "Link"
+            targets.append({
+                "key": _video_klonla_task_key("prompt_source", item_no),
+                "no": item_no,
+                "order": order,
+                "label": "Kaynak Bekleniyor" if is_placeholder_link else f"{label_prefix} {item_no}",
+                "source_group": "prompt_source",
+                "source_label": "Kaynak Bekleniyor" if is_placeholder_link else label_prefix,
+                "source_kind": "downloaded_video" if download_by_no.get(item_no) else ("placeholder_link" if is_placeholder_link else "link"),
+                "video_path": download_by_no.get(item_no, ""),
+                "video_name": os.path.basename(download_by_no.get(item_no, "")) if download_by_no.get(item_no) else "",
+                "placeholder": is_placeholder_link,
+            })
+        return targets
+
+    if mode != "auto":
+        return targets
+
+    for idx, entry in enumerate(_list_video_klonla_source_videos(), start=1):
+        label = str(entry.get("label") or f"Video {idx}").strip() or f"Video {idx}"
+        targets.append({
+            "key": _video_klonla_task_key(str(entry.get("source") or "video"), idx),
+            "no": idx,
+            "order": idx,
+            "label": label,
+            "source_group": str(entry.get("source") or "video"),
+            "source_label": label,
+            "source_kind": str(entry.get("source") or "video"),
+            "video_path": str(entry.get("path") or "").strip(),
+            "video_name": os.path.basename(str(entry.get("path") or "").strip()),
+        })
+    return targets
+
+
+def _video_klonla_resolve_task_state(state: dict, target: dict) -> dict:
+    base = {
+        "modify_prompt": str((state or {}).get("modify_prompt") or "").strip(),
+        "selected_image": str((state or {}).get("selected_image") or "").strip(),
+        "uploaded_image": str((state or {}).get("uploaded_image") or "").strip(),
+        "use_system_images": bool((state or {}).get("use_system_images", True)),
+    }
+    task_key = str((target or {}).get("key") or "").strip()
+    task_state = _video_klonla_tasks_dict(state).get(task_key)
+    if isinstance(task_state, dict):
+        if "modify_prompt" in task_state:
+            base["modify_prompt"] = str(task_state.get("modify_prompt") or "").strip()
+        if "selected_image" in task_state:
+            base["selected_image"] = str(task_state.get("selected_image") or "").strip()
+        if "uploaded_image" in task_state:
+            base["uploaded_image"] = str(task_state.get("uploaded_image") or "").strip()
+        if "use_system_images" in task_state:
+            base["use_system_images"] = bool(task_state.get("use_system_images"))
+    for image_key in ("selected_image", "uploaded_image"):
+        image_path = str(base.get(image_key) or "").strip()
+        base[image_key] = image_path if image_path and os.path.exists(image_path) else ""
+    return base
+
+
+def _video_klonla_is_active() -> bool:
+    try:
+        stt = st.session_state.get("status", {})
+        active = {"running", "ok", "error", "partial", "paused"}
+        return (
+            st.session_state.get("single_step") == "video_klonla"
+            or st.session_state.get("bg_node_key") == "video_klonla"
+            or stt.get("video_klonla") in active
+        )
+    except Exception:
+        return False
+
+
+def _list_video_klonla_source_videos() -> list[dict]:
+    items = []
+    seen = set()
+    try:
+        for entry in _list_download_video_entries():
+            path = str(entry.get("video_path") or "").strip()
+            if path and path not in seen:
+                seen.add(path)
+                items.append({"label": f"📥 {(entry.get('folder_name') or os.path.basename(path))}", "path": path, "source": "download"})
+    except Exception:
+        pass
+    try:
+        added_dir = str(st.session_state.settings.get("added_video_dir") or "").strip()
+        if added_dir and os.path.isdir(added_dir):
+            for root, _, files in os.walk(added_dir):
+                for fname in files:
+                    if fname.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")):
+                        path = os.path.join(root, fname)
+                        if path not in seen:
+                            seen.add(path)
+                            items.append({"label": f"🎞️ {os.path.relpath(path, added_dir)}", "path": path, "source": "added"})
+    except Exception:
+        pass
+    try:
+        assets = _list_video_montaj_assets()
+        for entry in assets.get("videos", []):
+            path = str(entry.get("path") or "").strip()
+            if path and os.path.exists(path) and path not in seen:
+                seen.add(path)
+                items.append({"label": f"🎬 {entry.get('label') or os.path.basename(path)}", "path": path, "source": entry.get("source_kind") or "video"})
+    except Exception:
+        pass
+    return items
+
+
+def _list_video_klonla_internal_images() -> list[dict]:
+    out = []
+    seen = set()
+    image_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    source_title_map = {
+        "gorsel_analiz": "Görsel Analiz",
+        "gorsel_klonla": "Klon Görsel",
+        "gorsel_olustur": "Görsel Oluştur",
+    }
+    source_counts = {k: 0 for k in source_title_map.keys()}
+    targets = [
+        ("gorsel_analiz", str(st.session_state.settings.get("gorsel_analiz_dir") or "")),
+        ("gorsel_klonla", str(st.session_state.settings.get("klon_gorsel_dir") or "")),
+        ("gorsel_olustur", str(st.session_state.settings.get("gorsel_olustur_dir") or "")),
+    ]
+    for source, root in targets:
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            local_paths = []
+            for cur_root, _, files in os.walk(root):
+                for fname in sorted(files):
+                    if fname.lower().endswith(image_exts):
+                        local_paths.append(os.path.join(cur_root, fname))
+            local_paths.sort(key=lambda p: (_extract_numeric_hint(p), os.path.basename(p).casefold()))
+            for path in local_paths:
+                if path in seen:
+                    continue
+                seen.add(path)
+                source_counts[source] += 1
+                out.append({
+                    "label": f"{source_title_map.get(source, source)} {source_counts[source]}",
+                    "path": path,
+                    "source": source,
+                    "preview": path,
+                })
+        except Exception:
+            pass
+    return out
+
+
+def _prioritize_video_klonla_internal_images(entries: list[dict], owner: str = "single") -> list[dict]:
+    items = list(entries or [])
+    if not items:
+        return items
+    if owner != "batch":
+        base_priority = {"gorsel_klonla": 0, "gorsel_analiz": 1, "gorsel_olustur": 2}
+        return sorted(
+            items,
+            key=lambda item: (
+                base_priority.get(item.get("source"), 99),
+                _extract_numeric_hint(item.get("path") or item.get("label")),
+                str(item.get("label") or "").casefold(),
+            ),
+        )
+
+    secs = st.session_state.get("ek_batch_secimler", {}) or {}
+    source_priority = {"gorsel_klonla": 2, "gorsel_analiz": 3, "gorsel_olustur": 4}
+    if secs.get("gorsel_klonla", False):
+        source_priority["gorsel_klonla"] = 0
+    if secs.get("gorsel_analiz", False) and not secs.get("gorsel_klonla", False):
+        source_priority["gorsel_analiz"] = 0
+    if secs.get("gorsel_olustur", False) and not secs.get("gorsel_klonla", False) and not secs.get("gorsel_analiz", False):
+        source_priority["gorsel_olustur"] = 0
+
+    return sorted(
+        items,
+        key=lambda item: (
+            source_priority.get(item.get("source"), 99),
+            _extract_numeric_hint(item.get("path") or item.get("label")),
+            str(item.get("label") or "").casefold(),
+        ),
+    )
+
+
+def _extract_numeric_hint(text_value: str) -> int:
+    m = re.search(r"(\d+)", str(text_value or ''))
+    return int(m.group(1)) if m else 0
+
+
+def _video_klonla_target_no(target: dict | None) -> int:
+    try:
+        target_no = int((target or {}).get("no") or 0)
+    except Exception:
+        target_no = 0
+    if target_no > 0:
+        return target_no
+    return _extract_numeric_hint((target or {}).get("label") or (target or {}).get("video_path") or "")
+
+
+def _video_klonla_batch_planned_image_info(target: dict | None, owner: str = "batch") -> dict | None:
+    if owner != "batch":
+        return None
+
+    item_no = _video_klonla_target_no(target)
+    if item_no <= 0:
+        return None
+
+    secs = st.session_state.get("ek_batch_secimler", {}) or {}
+    settings_obj = st.session_state.get("settings", {}) or {}
+    gorsel_duzelt_data = gorsel_duzelt_oku() if "gorsel_duzelt_oku" in globals() else {}
+    get_ga_folders = globals().get("get_gorsel_analiz_klasorleri")
+    get_go_refs = globals().get("_list_gorsel_olustur_reference_image_entries")
+    gkl_source = str(settings_obj.get("gorsel_klonla_kaynak", "gorsel_analiz") or "gorsel_analiz").strip()
+
+    if secs.get("gorsel_klonla", False):
+        prompt_ok = _gorsel_klon_prompt_has_value(
+            gorsel_duzelt_data.get(item_no),
+            require_transition_pair=_is_section_transition_mode("gorsel_klonla_transition_enabled"),
+        )
+        if gkl_source == "gorsel_olustur":
+            source_ready = bool(secs.get("gorsel_olustur", False) or (callable(get_go_refs) and get_go_refs()))
+            source_label = f"Görsel Oluştur {item_no}"
+        else:
+            source_ready = bool(secs.get("gorsel_analiz", False) or (callable(get_ga_folders) and get_ga_folders()))
+            source_label = f"Görsel Analiz {item_no}"
+        if prompt_ok and source_ready:
+            return {
+                "available": True,
+                "planned": True,
+                "path": "",
+                "label": f"Görsel {item_no}",
+                "source": "gorsel_klonla",
+                "detail": f"Batch sırasında önce {source_label} hazırlanacak, ardından Klon Görsel {item_no} kullanılacak.",
+                "expected_source_label": f"Klon Görsel {item_no}",
+                "image_no": item_no,
+            }
+
+    if secs.get("gorsel_analiz", False):
+        return {
+            "available": True,
+            "planned": True,
+            "path": "",
+            "label": f"Görsel {item_no}",
+            "source": "gorsel_analiz",
+            "detail": f"Batch sırasında Görsel Analiz {item_no} oluşturulacak ve bu görevde kullanılacak.",
+            "expected_source_label": f"Görsel Analiz {item_no}",
+            "image_no": item_no,
+        }
+
+    if secs.get("gorsel_olustur", False):
+        return {
+            "available": True,
+            "planned": True,
+            "path": "",
+            "label": f"Görsel {item_no}",
+            "source": "gorsel_olustur",
+            "detail": f"Batch sırasında Görsel Oluştur {item_no} hazırlanacak ve bu görevde kullanılacak.",
+            "expected_source_label": f"Görsel Oluştur {item_no}",
+            "image_no": item_no,
+        }
+
+    return None
+
+
+def _video_klonla_resolve_system_image_info(
+    target: dict | None,
+    selected_image: str,
+    internal_images: list[dict],
+    owner: str = "single",
+) -> dict:
+    item_no = _video_klonla_target_no(target)
+    actual_path = _pick_image_for_video(
+        str((target or {}).get("video_path") or "").strip(),
+        selected_image,
+        internal_images,
+        item_no,
+    )
+    if actual_path:
+        matched = next((item for item in internal_images if str(item.get("path") or "").strip() == actual_path), None)
+        return {
+            "available": True,
+            "planned": False,
+            "path": actual_path,
+            "label": str((matched or {}).get("label") or os.path.basename(actual_path)).strip(),
+            "source": str((matched or {}).get("source") or "").strip(),
+            "detail": "",
+            "expected_source_label": str((matched or {}).get("label") or os.path.basename(actual_path)).strip(),
+            "image_no": item_no,
+        }
+
+    planned_info = _video_klonla_batch_planned_image_info(target, owner=owner)
+    if planned_info:
+        return planned_info
+
+    return {
+        "available": False,
+        "planned": False,
+        "path": "",
+        "label": f"Görsel {item_no}" if item_no > 0 else "Görsel",
+        "source": "",
+        "detail": "",
+        "expected_source_label": "",
+        "image_no": item_no,
+    }
+
+
+def _pick_image_for_video(video_path: str, selected_image: str, internal_images: list[dict], item_no: int | None = None) -> str:
+    if selected_image and os.path.exists(selected_image):
+        return selected_image
+    if not internal_images:
+        return ""
+    try:
+        hint = int(item_no or 0)
+    except Exception:
+        hint = 0
+    if hint <= 0:
+        hint = _extract_numeric_hint(video_path)
+    if hint > 0:
+        for item in internal_images:
+            if _extract_numeric_hint(item.get("label") or item.get("path")) == hint:
+                return item.get("path") or ""
+    return internal_images[0].get("path") or ""
+
+
+def _video_klonla_target_has_saved_config(state: dict, target: dict, internal_images: list[dict]) -> bool:
+    clone_model = str((state or {}).get("clone_model") or "Motion Control")
+    task_state = _video_klonla_resolve_task_state(state, target)
+    return _video_klonla_target_has_config_for_model(clone_model, task_state, target, internal_images)
+
+
+def _video_klonla_target_has_config_for_model(clone_model: str, task_state: dict, target: dict, internal_images: list[dict]) -> bool:
+    if clone_model == "Modify":
+        return bool(str(task_state.get("modify_prompt") or "").strip())
+    if task_state.get("uploaded_image"):
+        return True
+    if task_state.get("use_system_images"):
+        owner = "batch" if any((st.session_state.get("ek_batch_secimler", {}) or {}).get(k, False) for k in ("gorsel_analiz", "gorsel_klonla", "gorsel_olustur", "video_klonla")) else "single"
+        return bool(
+            _video_klonla_resolve_system_image_info(
+                target,
+                str(task_state.get("selected_image") or "").strip(),
+                internal_images,
+                owner=owner,
+            ).get("available")
+        )
+    return False
+
+
+def _video_klonla_saved_task_count(state: dict | None = None, owner: str = "batch") -> int:
+    state = state or _load_video_klonla_state()
+    targets = _video_klonla_build_task_targets(saved_paths=_video_klonla_saved_direct_video_paths(state))
+    if not targets:
+        clone_model = str(state.get("clone_model") or "Motion Control")
+        if clone_model == "Modify":
+            return 1 if str(state.get("modify_prompt") or "").strip() else 0
+        internal_images = _prioritize_video_klonla_internal_images(_list_video_klonla_internal_images(), owner)
+        if str(state.get("uploaded_image") or "").strip() and os.path.exists(str(state.get("uploaded_image") or "").strip()):
+            return 1
+        if bool(state.get("use_system_images", True)) and internal_images:
+            return 1
+        return 0
+
+    internal_images = _prioritize_video_klonla_internal_images(_list_video_klonla_internal_images(), owner)
+    return sum(1 for target in targets if _video_klonla_target_has_saved_config(state, target, internal_images))
+
+
+def _collect_video_klonla_runtime_items(owner: str = "single") -> list[dict]:
+    state = _load_video_klonla_state()
+    items = []
+    task_targets = _video_klonla_build_task_targets(saved_paths=_video_klonla_saved_direct_video_paths(state))
+    internal_images = _list_video_klonla_internal_images()
+    internal_images = _prioritize_video_klonla_internal_images(internal_images, owner)
+
+    for target in task_targets:
+        video_path = str(target.get("video_path") or "").strip()
+        if not video_path or not os.path.exists(video_path):
+            continue
+        task_state = _video_klonla_resolve_task_state(state, target)
+        if state.get("clone_model") == "Modify":
+            prompt = str(task_state.get("modify_prompt") or "").strip()
+            if not prompt:
+                continue
+            items.append({
+                "name": str(target.get("label") or os.path.basename(video_path)).strip(),
+                "video": video_path,
+                "prompt": prompt,
+                "model": state.get("modify_model", "v5.5"),
+                "quality": state.get("modify_quality", "720p"),
+                "keyframe_time": int(state.get("modify_keyframe_time") or 0),
+            })
+        else:
+            image_path = str(task_state.get("uploaded_image") or "").strip()
+            if not image_path and task_state.get("use_system_images"):
+                image_path = _pick_image_for_video(
+                    video_path,
+                    str(task_state.get("selected_image") or "").strip(),
+                    internal_images,
+                    target.get("no"),
+                )
+            if not image_path:
+                continue
+            items.append({
+                "name": str(target.get("label") or os.path.basename(video_path)).strip(),
+                "video": video_path,
+                "image": image_path,
+                "model": state.get("motion_model", "v5.6"),
+                "quality": state.get("motion_quality", "720p"),
+            })
+    return items
+
+
+def _video_klonla_has_valid_saved_config() -> bool:
+    state = _load_video_klonla_state()
+    clone_model = str(state.get("clone_model") or "Motion Control")
+    task_targets = _video_klonla_build_task_targets(saved_paths=_video_klonla_saved_direct_video_paths(state))
+    internal_images = _prioritize_video_klonla_internal_images(_list_video_klonla_internal_images(), "batch")
+
+    if task_targets:
+        return any(_video_klonla_target_has_saved_config(state, target, internal_images) for target in task_targets)
+
+    if clone_model == "Modify":
+        return bool(str(state.get("modify_prompt") or "").strip())
+
+    uploaded_image = str(state.get("uploaded_image") or "").strip()
+    if uploaded_image and os.path.exists(uploaded_image):
+        return True
+
+    if state.get("use_system_images", True):
+        return bool(internal_images)
+    return False
+
+
+def _planned_video_klonla_output_count() -> int:
+    runtime_items = _collect_video_klonla_runtime_items("batch")
+    saved_count = _video_klonla_saved_task_count(owner="batch")
+    return max(len(runtime_items), saved_count)
+
+
+def _build_video_klonla_runtime(owner: str = "single") -> tuple[str, dict]:
+    state = _load_video_klonla_state()
+    items = _collect_video_klonla_runtime_items(owner)
+    runtime = {
+        "items": items,
+        "output_root": str(st.session_state.settings.get("klon_video_dir") or st.session_state.settings.get("video_klonla_dir") or r"C:\Users\User\Desktop\Otomasyon\Klon Video"),
+        "clone_model": state.get("clone_model", "Motion Control"),
+        "owner": owner,
+    }
+    with open(VIDEO_KLONLA_RUNTIME_PATH, "w", encoding="utf-8") as f:
+        json.dump(runtime, f, ensure_ascii=False, indent=2)
+    return VIDEO_KLONLA_RUNTIME_PATH, runtime
+
+
+def start_video_klonla_bg(owner: str = "single") -> bool:
+    state = _load_video_klonla_state()
+    clone_model = str(state.get("clone_model") or "Motion Control")
+    script_path = (st.session_state.settings.get("video_klonla_motion_script") or MOTION_CONTROL_SCRIPT_DEFAULT) if clone_model == "Motion Control" else (st.session_state.settings.get("video_klonla_modify_script") or MODIFY_SCRIPT_DEFAULT)
+    runtime_path, runtime = _build_video_klonla_runtime(owner)
+    if not runtime.get("items"):
+        st.session_state.status["video_klonla"] = "error"
+        if clone_model == "Modify":
+            log("[ERROR] Video Klonla için uygun video + prompt bulunamadı.")
+        else:
+            log("[ERROR] Video Klonla için uygun video + görsel bulunamadı.")
+        return False
+        log("[ERROR] Video Klonla için uygun video/görsel/prompt bulunamadı.")
+        return False
+    return bg_start(owner, "video_klonla", script_path, args=["--config", runtime_path])
 
 
 def _normalize_gorsel_olustur_mode(value: str) -> str:
@@ -718,7 +1925,7 @@ def _sm_normalize_kaynak_secim(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
         return "Link"
-    if raw in ("Link", "Video", "🎞️ Video Ekle", "🎬 Toplu Video Montaj", "🎞️ Video Montaj", "🖼️ Görsel Oluştur"):
+    if raw in ("Link", "Video", "🖼️ Görsel Oluştur", "🎞️ Video Ekle", "🎞️ Video Montaj", "🎬 Toplu Video Montaj", "🎬 Klon Video"):
         return raw
     if raw == "Video/Link":
         return "Link"
@@ -728,6 +1935,8 @@ def _sm_normalize_kaynak_secim(value: str) -> str:
         return "🖼️ Görsel Oluştur"
     if "toplu" in low and "montaj" in low:
         return "🎬 Toplu Video Montaj"
+    if "klon" in low and "video" in low:
+        return "🎬 Klon Video"
     if ("ekle" in low and "video" in low) or "eklenen" in low:
         return "🎞️ Video Ekle"
     if "montaj" in low:
@@ -745,10 +1954,32 @@ def _normalize_toplu_video_source_mode(value: str) -> str:
         return "Eklenen Video"
     if raw == "Görsel Oluştur":
         return "Görsel Oluştur"
+    if raw == "Klon Video":
+        return "Klon Video"
+    if "klon" in raw.lower():
+        return "Klon Video"
     return "Mevcut Videolar"
+
+
+def _toplu_video_uretim_limiti_normalize(value, max_value: int | None = None) -> int:
+    try:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            return 0
+        number = int(float(cleaned.replace(",", ".")))
+    except Exception:
+        return 0
+    if number <= 0:
+        return 0
+    if max_value is not None and max_value > 0:
+        number = min(number, int(max_value))
+    return max(1, number)
+
 
 def clear_dialog_states():
     """Herhangi bir ana menü tuşuna basıldığında asılı kalmış diyalogları sıfırlar."""
+    _reset_video_bolum_temp(remove_file=True)
+    _reset_complex_dialog_lazy_state()
     st.session_state.ek_dialog_open = None
     st.session_state.file_manager_trigger = False
     st.session_state.lightbox_gorsel = None
@@ -762,6 +1993,586 @@ def log(line: str):
     st.session_state.logs.append(f"[{timestamp}] {line.rstrip()}")
     if len(st.session_state.logs) > 1000:
         st.session_state.logs = st.session_state.logs[-1000:]
+
+VIDEO_BOLUM_PLAN_FILE = os.path.join(CONTROL_DIR, "video_bolum_plan.json")
+VIDEO_BOLUM_PREVIEW_CACHE_FILE = os.path.join(CONTROL_DIR, "video_bolum_preview_cache.json")
+
+
+def _video_bolum_read_json(path: str, default):
+    try:
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data
+    except Exception:
+        pass
+    return default
+
+
+def _video_bolum_write_json(path: str, data) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        try:
+            log(f"[WARN] Video bolum plani yazilamadi: {e}")
+        except Exception:
+            pass
+        return False
+
+
+def _video_bolum_default_plan_state() -> dict:
+    return {"items": []}
+
+
+def _load_video_bolum_plan_state() -> dict:
+    data = _video_bolum_read_json(VIDEO_BOLUM_PLAN_FILE, _video_bolum_default_plan_state())
+    if not isinstance(data, dict):
+        data = _video_bolum_default_plan_state()
+    if not isinstance(data.get("items"), list):
+        data["items"] = []
+    data["items"] = [item for item in data["items"] if isinstance(item, dict)]
+    return data
+
+
+def _save_video_bolum_plan_state(state: dict) -> bool:
+    if not isinstance(state, dict):
+        state = _video_bolum_default_plan_state()
+    if not isinstance(state.get("items"), list):
+        state["items"] = []
+    return _video_bolum_write_json(VIDEO_BOLUM_PLAN_FILE, state)
+
+
+def _video_bolum_plan_key(source_no, url: str) -> str:
+    try:
+        no = int(source_no or 0)
+    except Exception:
+        no = 0
+    return f"link:{no}:{str(url or '').strip()}"
+
+
+def _normalize_video_bolum_segments(segments: list) -> list[list[float]]:
+    out = []
+    for item in segments or []:
+        try:
+            start, end = item
+            start = round(float(start), 3)
+            end = round(float(end), 3)
+        except Exception:
+            continue
+        if end > start >= 0:
+            out.append([start, end])
+    return out
+
+
+def _upsert_video_bolum_link_plan(plan: dict) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    segments = _normalize_video_bolum_segments(plan.get("segments") or [])
+    if not segments:
+        return False
+    plan = dict(plan)
+    plan["kind"] = "link"
+    plan["segments"] = segments
+    plan["key"] = _video_bolum_plan_key(plan.get("source_no"), plan.get("url"))
+    plan["saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    state = _load_video_bolum_plan_state()
+    items = []
+    replaced = False
+    for item in state.get("items", []):
+        if str(item.get("key") or "") == plan["key"]:
+            previous = dict(item)
+            previous.update(plan)
+            for clear_key in ("applied_signature", "applied_outputs", "applied_at", "applied_count"):
+                previous.pop(clear_key, None)
+            items.append(previous)
+            replaced = True
+        else:
+            items.append(item)
+    if not replaced:
+        items.append(plan)
+    state["items"] = items
+    return _save_video_bolum_plan_state(state)
+
+
+def _video_bolum_plan_for_link(source_no, url: str) -> dict | None:
+    key = _video_bolum_plan_key(source_no, url)
+    for item in _load_video_bolum_plan_state().get("items", []):
+        if str(item.get("key") or "") == key:
+            return item
+    return None
+
+
+def _count_video_bolum_link_plans() -> int:
+    return len([item for item in _load_video_bolum_plan_state().get("items", []) if item.get("kind") == "link"])
+
+
+def _read_video_link_entries(path: str | None = None) -> list[dict]:
+    settings_obj = st.session_state.get("settings", {}) if isinstance(st.session_state.get("settings", {}), dict) else {}
+    links_file = str(path or settings_obj.get("links_file") or "").strip()
+    if not links_file or not os.path.exists(links_file):
+        return []
+    try:
+        with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+            raw_lines = [line.strip() for line in f.read().splitlines()]
+    except Exception:
+        return []
+
+    entries = []
+    for line in raw_lines:
+        if not line or not line.lower().startswith(("http://", "https://")):
+            continue
+        no = len(entries) + 1
+        entries.append({"no": no, "url": line, "label": f"Link Video {no}"})
+    return entries
+
+
+def _video_bolum_shorten_url(url: str, limit: int = 84) -> str:
+    text = str(url or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(8, limit - 3)] + "..."
+
+
+def _video_bolum_detect_platform(url: str) -> str:
+    low = str(url or "").lower()
+    if "youtube.com" in low or "youtu.be" in low:
+        return "youtube"
+    if "tiktok.com" in low or "vm.tiktok.com" in low:
+        return "tiktok"
+    if "instagram.com" in low:
+        return "instagram"
+    return "generic"
+
+
+def _resolve_video_bolum_link_preview(url: str) -> dict:
+    url = str(url or "").strip()
+    fallback = {
+        "ok": False,
+        "url": url,
+        "preview_url": url,
+        "title": "",
+        "duration": 0.0,
+        "error": "",
+    }
+    if not url:
+        fallback["error"] = "Link bos."
+        return fallback
+
+    cache = _video_bolum_read_json(VIDEO_BOLUM_PREVIEW_CACHE_FILE, {})
+    if not isinstance(cache, dict):
+        cache = {}
+    cached = cache.get(url)
+    try:
+        cache_age = time.time() - float((cached or {}).get("cached_at") or 0)
+    except Exception:
+        cache_age = 999999
+    if isinstance(cached, dict) and cached.get("preview_url") and cache_age < 2700:
+        out = dict(fallback)
+        out.update(cached)
+        out["ok"] = bool(out.get("duration", 0) and out.get("preview_url"))
+        return out
+
+    try:
+        import yt_dlp
+
+        platform = _video_bolum_detect_platform(url)
+        fmt = "best[ext=mp4][height<=720]/best[height<=720]/best"
+        if platform != "youtube":
+            fmt = "best[ext=mp4]/best"
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "format": fmt,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if isinstance(info, dict) and isinstance(info.get("entries"), list) and info.get("entries"):
+            info = info["entries"][0]
+        if not isinstance(info, dict):
+            raise RuntimeError("Video bilgisi okunamadi.")
+
+        preview_url = str(info.get("url") or url).strip() or url
+        title = str(info.get("title") or info.get("fulltitle") or "").strip()
+        try:
+            duration = float(info.get("duration") or 0.0)
+        except Exception:
+            duration = 0.0
+
+        out = {
+            "ok": bool(preview_url and duration > 0),
+            "url": url,
+            "preview_url": preview_url,
+            "title": title,
+            "duration": duration,
+            "platform": platform,
+            "cached_at": time.time(),
+            "error": "" if duration > 0 else "Video suresi okunamadi.",
+        }
+        cache[url] = {k: v for k, v in out.items() if k != "ok"}
+        _video_bolum_write_json(VIDEO_BOLUM_PREVIEW_CACHE_FILE, cache)
+        return out
+    except Exception as e:
+        fallback["error"] = str(e)
+        return fallback
+
+
+def _video_bolum_added_dir() -> str:
+    settings_obj = st.session_state.get("settings", {}) if isinstance(st.session_state.get("settings", {}), dict) else {}
+    return str(settings_obj.get("added_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Eklenen Video").strip()
+
+
+def _video_bolum_download_dir() -> str:
+    settings_obj = st.session_state.get("settings", {}) if isinstance(st.session_state.get("settings", {}), dict) else {}
+    return str(settings_obj.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
+
+
+def _video_bolum_sort_key(value: str):
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(value or ""))]
+
+
+def _video_bolum_supported_name(name: str) -> bool:
+    return str(name or "").lower().endswith((".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"))
+
+
+def _video_bolum_scan_download_entries() -> list[dict]:
+    fn = globals().get("_list_download_video_entries")
+    if callable(fn):
+        try:
+            return list(fn() or [])
+        except Exception:
+            pass
+
+    root = _video_bolum_download_dir()
+    if not root or not os.path.isdir(root):
+        return []
+    out = []
+    try:
+        folders = [name for name in os.listdir(root) if os.path.isdir(os.path.join(root, name))]
+    except Exception:
+        return []
+    folders.sort(key=_video_bolum_sort_key)
+    for idx, folder_name in enumerate(folders, start=1):
+        folder_path = os.path.join(root, folder_name)
+        try:
+            videos = [name for name in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, name)) and _video_bolum_supported_name(name)]
+        except Exception:
+            videos = []
+        if not videos:
+            continue
+        videos.sort(key=_video_bolum_sort_key)
+        match = re.search(r"(\d+)\s*$", folder_name)
+        no = int(match.group(1)) if match else idx
+        out.append({
+            "no": no,
+            "folder_name": folder_name,
+            "folder_path": folder_path,
+            "video_name": videos[0],
+            "video_path": os.path.join(folder_path, videos[0]),
+            "source_kind": "download",
+        })
+    return out
+
+
+def _video_bolum_download_by_no() -> dict[int, dict]:
+    out = {}
+    for entry in _video_bolum_scan_download_entries():
+        try:
+            no = int(entry.get("no") or 0)
+        except Exception:
+            no = 0
+        path = str(entry.get("video_path") or "").strip()
+        if no > 0 and path and os.path.isfile(path):
+            out[no] = entry
+    return out
+
+
+def _video_bolum_format_seconds(seconds: float) -> str:
+    try:
+        value = max(0.0, float(seconds))
+    except Exception:
+        value = 0.0
+    return f"{value:.3f}"
+
+
+def _video_bolum_split_to_added(video_path: str, segments: list, output_dir: str, start_no: int = 1) -> list[dict]:
+    results = []
+    ext = os.path.splitext(video_path)[1] or ".mp4"
+    for idx, (start, end) in enumerate(_normalize_video_bolum_segments(segments)):
+        video_no = int(start_no) + idx
+        folder = os.path.join(output_dir, f"Video {video_no}")
+        os.makedirs(folder, exist_ok=True)
+        out_path = os.path.join(folder, f"bolum_{video_no}{ext}")
+        duration = max(0.0, float(end) - float(start))
+        try:
+            completed = subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", video_path,
+                    "-ss", _video_bolum_format_seconds(start),
+                    "-t", _video_bolum_format_seconds(duration),
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-avoid_negative_ts", "make_zero",
+                    "-movflags", "+faststart",
+                    out_path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if completed.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+                results.append({"no": video_no, "folder": folder, "video": out_path})
+            else:
+                log(f"[WARN] Video bolum kesilemedi: Video {video_no}")
+        except Exception as e:
+            log(f"[WARN] Video bolum kesme hatasi: Video {video_no} -> {e}")
+    return results
+
+
+def _video_bolum_plan_signature(plan: dict, video_path: str) -> str:
+    try:
+        size = os.path.getsize(video_path)
+        mtime = round(os.path.getmtime(video_path), 3)
+    except Exception:
+        size = 0
+        mtime = 0
+    segments = _normalize_video_bolum_segments(plan.get("segments") or [])
+    return json.dumps(
+        {
+            "source_no": int(plan.get("source_no") or 0),
+            "video_path": os.path.abspath(video_path),
+            "size": size,
+            "mtime": mtime,
+            "segments": segments,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _video_bolum_outputs_exist(plan: dict) -> bool:
+    outputs = plan.get("applied_outputs")
+    if not isinstance(outputs, list) or not outputs:
+        return False
+    for output_path in outputs:
+        if not output_path or not os.path.isfile(str(output_path)):
+            return False
+    return True
+
+
+def _has_video_bolum_link_plans() -> bool:
+    current_links = {int(item.get("no") or 0): str(item.get("url") or "").strip() for item in _read_video_link_entries()}
+    for plan in _load_video_bolum_plan_state().get("items", []):
+        if plan.get("kind") != "link":
+            continue
+        try:
+            source_no = int(plan.get("source_no") or 0)
+        except Exception:
+            source_no = 0
+        if not current_links or current_links.get(source_no) == str(plan.get("url") or "").strip():
+            return True
+    return False
+
+
+def _get_active_video_bolum_link_plans() -> list[dict]:
+    current_links = {int(item.get("no") or 0): str(item.get("url") or "").strip() for item in _read_video_link_entries()}
+    out = []
+    for plan in _load_video_bolum_plan_state().get("items", []):
+        if plan.get("kind") != "link":
+            continue
+        try:
+            source_no = int(plan.get("source_no") or 0)
+        except Exception:
+            source_no = 0
+        url = str(plan.get("url") or "").strip()
+        segments = _normalize_video_bolum_segments(plan.get("segments") or [])
+        if source_no <= 0 or not url or not segments:
+            continue
+        if current_links and current_links.get(source_no) != url:
+            continue
+        item = dict(plan)
+        item["segments"] = segments
+        out.append(item)
+    out.sort(key=lambda item: (int(item.get("source_no") or 0), str(item.get("url") or "").strip()))
+    return out
+
+
+def _list_planned_added_video_entries() -> list[dict]:
+    items = []
+    next_video_no = 1
+    for plan in _get_active_video_bolum_link_plans():
+        try:
+            source_no = int(plan.get("source_no") or 0)
+        except Exception:
+            source_no = 0
+        title = str(plan.get("title") or f"Link Video {source_no}").strip()
+        for segment_idx, (start_sec, end_sec) in enumerate(plan.get("segments") or [], start=1):
+            video_no = next_video_no
+            next_video_no += 1
+            items.append({
+                "no": video_no,
+                "folder_name": f"Video {video_no}",
+                "folder_path": "",
+                "video_name": f"Planlanan Bolum {segment_idx}",
+                "video_path": "",
+                "exists": False,
+                "expected": True,
+                "planned": True,
+                "source_kind": "added_video_plan",
+                "source_no": source_no,
+                "source_title": title,
+                "segment_no": segment_idx,
+                "segment_start": float(start_sec),
+                "segment_end": float(end_sec),
+            })
+    return items
+
+
+def _list_added_video_preview_entries() -> list:
+    actual_entries = _list_added_video_entries()
+    if actual_entries:
+        return actual_entries
+    return _list_planned_added_video_entries()
+
+
+def _has_pending_video_bolum_plans_needing_download() -> bool:
+    state = _load_video_bolum_plan_state()
+    download_by_no = _video_bolum_download_by_no()
+    current_links = {int(item.get("no") or 0): str(item.get("url") or "").strip() for item in _read_video_link_entries()}
+    for plan in state.get("items", []):
+        if plan.get("kind") != "link":
+            continue
+        try:
+            source_no = int(plan.get("source_no") or 0)
+        except Exception:
+            source_no = 0
+        if current_links and current_links.get(source_no) != str(plan.get("url") or "").strip():
+            continue
+        if source_no > 0 and source_no not in download_by_no:
+            return True
+    return False
+
+
+def _apply_saved_video_bolum_plans_after_download(owner: str = "batch") -> bool:
+    state = _load_video_bolum_plan_state()
+    plans = [plan for plan in state.get("items", []) if plan.get("kind") == "link" and _normalize_video_bolum_segments(plan.get("segments") or [])]
+    if not plans:
+        return False
+
+    download_by_no = _video_bolum_download_by_no()
+    current_links = {int(item.get("no") or 0): str(item.get("url") or "").strip() for item in _read_video_link_entries()}
+    ready = []
+    missing = []
+    stale_keys = set()
+    for plan in plans:
+        try:
+            source_no = int(plan.get("source_no") or 0)
+        except Exception:
+            source_no = 0
+        if current_links and current_links.get(source_no) != str(plan.get("url") or "").strip():
+            stale_keys.add(str(plan.get("key") or _video_bolum_plan_key(source_no, plan.get("url"))))
+            continue
+        entry = download_by_no.get(source_no)
+        path = str((entry or {}).get("video_path") or "").strip()
+        if source_no > 0 and path and os.path.isfile(path):
+            ready.append((plan, entry, path))
+        else:
+            missing.append(source_no)
+
+    if not ready:
+        if stale_keys:
+            state["items"] = [item for item in state.get("items", []) if str(item.get("key") or "") not in stale_keys]
+            _save_video_bolum_plan_state(state)
+        if missing:
+            log("[WARN] Video bolum planlari var ama indirilen video bulunamadi: " + ", ".join(f"Video {n}" for n in missing if n))
+        return False
+
+    all_already_applied = True
+    for plan, _entry, path in ready:
+        signature = _video_bolum_plan_signature(plan, path)
+        if plan.get("applied_signature") != signature or not _video_bolum_outputs_exist(plan):
+            all_already_applied = False
+            break
+
+    if all_already_applied:
+        try:
+            writer = globals().get("_write_prompt_source_mode") or globals().get("_early_write_prompt_source_mode")
+            if callable(writer):
+                writer("added_video")
+            st.session_state.link_canvas_source = "added_video"
+        except Exception:
+            pass
+        log("[INFO] Kayitli video bolumleri zaten hazir; Eklenen Video kaynagi kullanilacak.")
+        return False
+
+    added_root = _video_bolum_added_dir()
+    os.makedirs(added_root, exist_ok=True)
+    try:
+        for name in os.listdir(added_root):
+            path = os.path.join(added_root, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+    except Exception as e:
+        log(f"[WARN] Eklenen Video temizlenemedi: {e}")
+
+    ready.sort(key=lambda item: int(item[0].get("source_no") or 0))
+    next_no = 1
+    applied_total = 0
+    updated_by_key = {}
+    log(f"[INFO] Kayitli video bolum planlari uygulanıyor: {len(ready)} kaynak")
+
+    for plan, entry, video_path in ready:
+        source_no = int(plan.get("source_no") or 0)
+        segments = _normalize_video_bolum_segments(plan.get("segments") or [])
+        results = _video_bolum_split_to_added(video_path, segments, added_root, start_no=next_no)
+        next_no += len(results)
+        applied_total += len(results)
+        updated = dict(plan)
+        updated["applied_signature"] = _video_bolum_plan_signature(plan, video_path)
+        updated["applied_outputs"] = [item.get("video") for item in results if item.get("video")]
+        updated["applied_count"] = len(results)
+        updated["applied_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        updated["download_video_path"] = video_path
+        updated["download_video_no"] = source_no
+        updated_by_key[str(plan.get("key") or _video_bolum_plan_key(source_no, plan.get("url")))] = updated
+        log(f"[OK] Link Video {source_no}: {len(results)}/{len(segments)} bolum Eklenen Video'ya kaydedildi.")
+
+    new_items = []
+    for plan in state.get("items", []):
+        key = str(plan.get("key") or "")
+        if key in stale_keys:
+            continue
+        new_items.append(updated_by_key.get(key, plan))
+    state["items"] = new_items
+    _save_video_bolum_plan_state(state)
+
+    if applied_total > 0:
+        writer = globals().get("_write_prompt_source_mode") or globals().get("_early_write_prompt_source_mode")
+        if callable(writer):
+            writer("added_video")
+        st.session_state.link_canvas_source = "added_video"
+        st.session_state.status["input"] = "ok"
+        clear_placeholder = globals().get("_clear_empty_source_placeholder")
+        if callable(clear_placeholder):
+            clear_placeholder()
+        log(f"[OK] Video bolum planlari tamamlandi: {applied_total} bolum hazir.")
+        return True
+
+    log("[WARN] Video bolum planlari calisti ama bolum uretilemedi.")
+    return False
 
 def any_running():
     return any(v == "running" for v in st.session_state.status.values())
@@ -902,6 +2713,7 @@ _DURUM_ISLEM_ETIKETLERI = {
     "gorsel_analiz": "Görsel Analiz",
     "gorsel_klonlama": "Görsel Klonlama",
     "gorsel_olustur": "Görsel Oluştur",
+    "video_klonla": "Video Klonla",
     "analyze": "Prompt Oluşturma",
     "prompt_duzeltme": "Prompt Düzeltme",
     "video_montaj": "Video Montaj",
@@ -915,6 +2727,8 @@ _DURUM_ISLEM_ETIKETLERI = {
 def get_durum_islem_etiketi(node_key: str) -> str:
     if node_key == "pixverse":
         return get_video_generation_action_name()
+    if node_key == "video_klonla":
+        return "Video Klonlama"
     return _DURUM_ISLEM_ETIKETLERI.get(node_key, node_key)
 
 def _normalize_hata_detay(raw_text: str) -> str:
@@ -922,6 +2736,16 @@ def _normalize_hata_detay(raw_text: str) -> str:
     text = re.sub(r'^[\s\-–—:;]+', '', text).strip()
     text = re.sub(r'^\[(ERROR|INFO|WARN|WARNING|DEBUG)\]\s*', '', text, flags=re.IGNORECASE).strip()
     text = re.sub(r'^(HATA DURUMU|HATA|ERROR|SEBEP|DETAY|SONUÇ)\s*[:\-]?\s*', '', text, flags=re.IGNORECASE).strip()
+
+    if text in {"{", "}", "{,", "},", "[]", "{}"}:
+        return "BaÅŸarÄ±sÄ±z"
+
+    m_json_error = re.search(r'"?error"?\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+    if m_json_error:
+        text = m_json_error.group(1).strip()
+
+    if re.search(r'"?code"?\s*:\s*"?(50043)"?', text, re.IGNORECASE):
+        return "Kredi Yetersiz"
 
     m_missing_file = re.search(r'dosya\s+bulunamad[^:]*:\s*(.+)', text, re.IGNORECASE)
     if m_missing_file:
@@ -931,6 +2755,24 @@ def _normalize_hata_detay(raw_text: str) -> str:
 
     if re.search(r'gerekli\s+komut\s+veya\s+dosya\s+bulunamad', text, re.IGNORECASE):
         return "Gerekli Komut veya Dosya Bulunamadı"
+
+    m_image_limit = re.search(r'Image resolution\s+(\d+)x(\d+)\s+exceeds\s+limit\s+(\d+)x(\d+)', text, re.IGNORECASE)
+    if m_image_limit:
+        width, height, limit_w, limit_h = m_image_limit.groups()
+        return f"Referans Gorsel Boyutu Cok Buyuk: {width}x{height} > {limit_w}x{limit_h}"
+
+    m_access_timeout = re.search(r'Failed to access\s+"?([^"]+?)"?\s*:\s*Response timeout for\s*(\d+)ms', text, re.IGNORECASE)
+    if m_access_timeout:
+        image_path, timeout_ms = m_access_timeout.groups()
+        image_name = os.path.basename(str(image_path).rstrip("\\/")) or str(image_path).strip()
+        try:
+            timeout_sn = max(1, int(timeout_ms) // 1000)
+        except Exception:
+            timeout_sn = 60
+        return f"Referans Gorsel Yukleme Zaman Asimi: {image_name} ({timeout_sn} sn)"
+
+    if re.search(r'all\s*credits?\s*have\s*been\s*used\s*up|purchase\s*credits|credits?.*used\s*up|50043\b', text, re.IGNORECASE):
+        return "Kredi Yetersiz"
 
     hata_kaliplari = [
         # Sosyal medya - sayfa yükleme / kanal seçme / buton hataları
@@ -1065,6 +2907,8 @@ def _detect_hata_detay(logs_snapshot: list, node_key: str) -> str:
         clean = _strip_log_prefix(line)
         if _is_non_actionable_log_line(clean):
             continue
+        if re.search(r'^\s*DETAY\s*:\s*[\{\[]?\s*$', clean, re.IGNORECASE) or clean.strip() in {"{", "}", "[", "]", "{}", "[]"}:
+            continue
         if any(re.search(kalip, clean, re.IGNORECASE) for kalip in etiketli_hata_kaliplari):
             detay = _normalize_hata_detay(clean)
             if detay and detay != 'Başarısız' and not _is_separator_line(detay):
@@ -1074,6 +2918,8 @@ def _detect_hata_detay(logs_snapshot: list, node_key: str) -> str:
         clean = _strip_log_prefix(line)
         if _is_non_actionable_log_line(clean):
             continue
+        if re.search(r'^\s*DETAY\s*:\s*[\{\[]?\s*$', clean, re.IGNORECASE) or clean.strip() in {"{", "}", "[", "]", "{}", "[]"}:
+            continue
         if any(re.search(kalip, clean, re.IGNORECASE) for kalip in oncelikli_hata_kaliplari):
             detay = _normalize_hata_detay(clean)
             if detay and detay != 'Başarısız' and not _is_separator_line(detay):
@@ -1082,6 +2928,8 @@ def _detect_hata_detay(logs_snapshot: list, node_key: str) -> str:
     for line in reversed(logs_snapshot or []):
         clean = _strip_log_prefix(line)
         if _is_non_actionable_log_line(clean):
+            continue
+        if re.search(r'^\s*DETAY\s*:\s*[\{\[]?\s*$', clean, re.IGNORECASE) or clean.strip() in {"{", "}", "[", "]", "{}", "[]"}:
             continue
         detay = _normalize_hata_detay(clean)
         if detay and detay != 'Başarısız' and not _is_separator_line(detay):
@@ -1109,9 +2957,10 @@ def _detect_prompt_numarasi(logs_snapshot: list) -> str:
 def _detect_pixverse_error_type(logs_snapshot: list) -> str:
     """
     Pixverse hatasının tipini log satırlarından tespit eder.
-    Dönüş: 'prompt' | 'credit' | 'other'
+    Dönüş: 'prompt' | 'credit' | 'timeout' | 'other'
     - 'prompt'  → Prompt çok uzun / karakter limiti aşıldı → Prompt Düzelt'e geri dön
     - 'credit'  → Kredi/kota yetersiz → doğrudan Video Üret'ten tekrar dene
+    - 'timeout' → Video bekleme / indirme zaman aşımı → Video Üret'ten tekrar dene
     - 'other'   → Diğer hatalar → Video Üret'ten tekrar dene
     """
     PROMPT_KALIPLARI = [
@@ -1141,8 +2990,16 @@ def _detect_pixverse_error_type(logs_snapshot: list) -> str:
         r'balance.*insufficient|insufficient.*balance',
         r'payment.*required|402\b',
         r'credit.*balance|krediniz.*yetersiz',
-        r'all\s*credits.*used\s*up|credits.*have.*been.*used|purchase\s*credits',
+        r'all\s*credits.*used\s*up|credits.*have.*been.*used|purchase\s*credits|50043\b',
         r'Yetersiz Video Üretme Kredisi|kredinizi yenileyin',
+    ]
+    TIMEOUT_KALIPLARI = [
+        r'beklenen\s+s[üu]rede\s+olu[şs]turulamad[ıi]',
+        r'polling\s+timed\s+out',
+        r'task.*wait.*timeout',
+        r'video\s+indirme\s+zaman\s+a[şs][ıi]m[ıi]',
+        r'indirme.*\d+\s*saniye.*tamamlanamad[ıi]',
+        r'zaman\s+a[şs][ıi]m[ıi]',
     ]
     for line in reversed(logs_snapshot or []):
         clean = _strip_log_prefix(line)
@@ -1156,6 +3013,9 @@ def _detect_pixverse_error_type(logs_snapshot: list) -> str:
         for kalip in PROMPT_KALIPLARI:
             if re.search(kalip, clean, re.IGNORECASE):
                 return "prompt"
+        for kalip in TIMEOUT_KALIPLARI:
+            if re.search(kalip, clean, re.IGNORECASE):
+                return "timeout"
         for kalip in KREDI_KALIPLARI:
             if re.search(kalip, clean, re.IGNORECASE):
                 return "credit"
@@ -1597,6 +3457,7 @@ def cleanup_runtime_temp_files() -> list:
 
     split_dir = os.path.join(CONTROL_DIR, "_temp_video_split")
     _remove_tree_if_exists(split_dir, ".control\\_temp_video_split")
+    _remove_tree_if_exists(VIDEO_KLONLA_UPLOAD_DIR, ".control\\video_klonla_uploads")
 
     prompt_temp_upload_dir = _get_prompt_temp_upload_dir()
     _remove_tree_if_exists(prompt_temp_upload_dir, "Prompt Oluşturma\\temp_upload")
@@ -1607,9 +3468,21 @@ def cleanup_runtime_temp_files() -> list:
             if os.path.abspath(str(temp_video_path)).startswith(os.path.abspath(split_dir)):
                 st.session_state.video_bolum_temp_path = None
                 st.session_state.video_bolum_temp_name = None
+                st.session_state.video_bolum_source_kind = "file"
+                st.session_state.video_bolum_source_no = None
+                st.session_state.video_bolum_source_url = ""
+                st.session_state.video_bolum_source_title = ""
+                st.session_state.video_bolum_source_duration = 0.0
+                st.session_state.video_bolum_preview_url = ""
         except Exception:
             st.session_state.video_bolum_temp_path = None
             st.session_state.video_bolum_temp_name = None
+            st.session_state.video_bolum_source_kind = "file"
+            st.session_state.video_bolum_source_no = None
+            st.session_state.video_bolum_source_url = ""
+            st.session_state.video_bolum_source_title = ""
+            st.session_state.video_bolum_source_duration = 0.0
+            st.session_state.video_bolum_preview_url = ""
 
     return cleaned
 
@@ -1624,6 +3497,10 @@ def cleanup_state_files():
             (DONE_FILE, "DONE.json"),
             (FAILED_FILE, "FAILED.json"),
             (GORSEL_OLUSTUR_STATE_PATH, "gorsel_olustur_state.json"),
+            (VIDEO_KLONLA_CONTROL_PATH, "video_klonla_state.json"),
+            (VIDEO_KLONLA_RUNTIME_PATH, "video_klonla_runtime.json"),
+            (VIDEO_BOLUM_PLAN_FILE, "video_bolum_plan.json"),
+            (VIDEO_BOLUM_PREVIEW_CACHE_FILE, "video_bolum_preview_cache.json"),
         ]:
             if os.path.exists(fpath):
                 os.remove(fpath)
@@ -1940,6 +3817,70 @@ def bg_terminate() -> bool:
     except Exception as e:
         log(f"[WARN] İşlem sonlandırma hatası: {e}")
         return False
+    return True
+
+def _schedule_panel_process_shutdown(pid: int, delay_seconds: float = 1.5) -> bool:
+    try:
+        pid_int = int(pid)
+    except Exception:
+        return False
+
+    if pid_int <= 0:
+        return False
+
+    try:
+        if os.name == "nt":
+            delay_ms = max(int(float(delay_seconds) * 1000), 1000)
+            ps_cmd = (
+                f"Start-Sleep -Milliseconds {delay_ms}; "
+                f"taskkill /PID {pid_int} /T /F | Out-Null"
+            )
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    ps_cmd,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            wait_seconds = max(float(delay_seconds), 1.0)
+            subprocess.Popen(
+                ["/bin/sh", "-c", f"sleep {wait_seconds:.1f}; kill -TERM {pid_int}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+        return True
+    except Exception as e:
+        log(f"[WARN] Panel kapatma zamanlanamadi: {e}")
+        return False
+
+def request_panel_shutdown() -> bool:
+    if st.session_state.get("panel_shutdown_requested", False):
+        return True
+
+    try:
+        bg_terminate()
+    except Exception:
+        pass
+
+    scheduled = _schedule_panel_process_shutdown(os.getpid(), delay_seconds=1.5)
+    if not scheduled:
+        log("[WARN] Otomasyon Paneli kapatilamadi.")
+        return False
+
+    st.session_state.panel_shutdown_requested = True
+    st.session_state.ek_dialog_open = None
+    log("[INFO] Otomasyon Paneli kapatiliyor...")
     return True
 
 def _read_text_file_safe(path: str) -> str:
@@ -2504,6 +4445,8 @@ def _resolve_social_media_launch_context_early() -> dict:
 
     if kaynak_secim == "🎬 Toplu Video Montaj":
         source_root = (s.get("toplu_video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Toplu Montaj").strip()
+    elif kaynak_secim == "🎬 Klon Video":
+        source_root = (s.get("klon_video_dir") or s.get("video_klonla_dir") or r"C:\Users\User\Desktop\Otomasyon\Klon Video").strip()
     elif kaynak_secim == "🖼️ Görsel Oluştur":
         source_root = (s.get("video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
     elif kaynak_secim == "🎞️ Video Ekle":
@@ -2725,6 +4668,33 @@ def bg_tick():
 bg_tick()
 
 
+def _clear_kredi_runtime_state():
+    for kredi_step in ("kredi_kazan", "kredi_cek"):
+        st.session_state[f"{kredi_step}_running"] = False
+        st.session_state[f"{kredi_step}_paused"] = False
+        st.session_state[f"{kredi_step}_finish"] = False
+        st.session_state[f"{kredi_step}_start_ts"] = 0.0
+
+
+def _consume_kredi_bg_result():
+    res = st.session_state.get("bg_last_result")
+    if not res:
+        return
+
+    node_key = res.get("node_key")
+    owner = res.get("owner")
+    if node_key not in ("kredi_kazan", "kredi_cek"):
+        return
+    if owner not in ("kredi_kazan", "kredi_cek"):
+        return
+
+    _clear_kredi_runtime_state()
+    st.session_state.bg_last_result = None
+
+
+_consume_kredi_bg_result()
+
+
 # --- EARLY BOOTSTRAP VIDEO HELPERS ---
 # Not: Streamlit scripti yukarıdan aşağıya çalıştığı için, batch/single start fonksiyonları
 # bu yardımcılar henüz aşağıda tanımlanmadan çağrılabiliyor. Bu erken tanımlar NameError
@@ -2739,13 +4709,22 @@ if "_video_montaj_sort_key" not in globals():
 if "_read_links_count" not in globals():
     def _read_links_count() -> int:
         links_file = st.session_state.settings.get("links_file", "")
-        if not links_file or not os.path.exists(links_file):
-            return 0
-        try:
-            with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
-                return len([ln for ln in f.read().splitlines() if ln.strip()])
-        except Exception:
-            return 0
+        counter = globals().get("_count_real_prompt_links")
+        if callable(counter):
+            count = counter(links_file)
+        else:
+            if not links_file or not os.path.exists(links_file):
+                count = 0
+            else:
+                try:
+                    with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+                        count = len([ln for ln in f.read().splitlines() if ln.strip()])
+                except Exception:
+                    count = 0
+        placeholder_active = globals().get("_empty_source_placeholder_active")
+        if count == 0 and callable(placeholder_active) and placeholder_active():
+            return 1
+        return count
 
 
 def _bootstrap_is_supported_video_name(name: str) -> bool:
@@ -2906,7 +4885,7 @@ if "_list_video_montaj_assets" not in globals():
                 if not os.path.isdir(item_path):
                     continue
 
-                m = re.match(r'^Klon\s+Video\s+(\d+)$', item, re.IGNORECASE)
+                m = re.match(r'^(?:Klon\s+)?Video\s+(\d+)$', item, re.IGNORECASE)
                 if not m:
                     continue
 
@@ -3029,7 +5008,7 @@ if "_remap_numeric_selection_text" not in globals():
         if raw.upper() == "T":
             return raw
 
-        parts = [p.strip() for p in re.split(r'[\s,;]+', raw) if p.strip()]
+        parts = [p.strip() for p in re.split(r'[\s,.;]+', raw) if p.strip()]
         if not parts:
             return raw
 
@@ -3154,12 +5133,16 @@ if "_orijinal_ses_kaynak_sirasi_to_paths" not in globals():
 # --- VIDEO MONTAJ EARLY BOOTSTRAP ---
 if "start_video_montaj_bg" not in globals():
 
+    def _vm_bootstrap_split_selection_text(text: str) -> list:
+        return [p.strip() for p in re.split(r'[\s,.;]+', text or "") if p.strip()]
+
+
     def _vm_bootstrap_ui_to_script_selection(text: str) -> str:
         raw = (text or "").strip()
         if not raw:
             return "T"
 
-        parts = [p.strip() for p in re.split(r'[\s,]+', raw) if p.strip()]
+        parts = _vm_bootstrap_split_selection_text(raw)
         if not parts:
             return "T"
 
@@ -3264,6 +5247,8 @@ if "start_video_montaj_bg" not in globals():
             "        try:",
             "            answer = next(answers)",
             "        except StopIteration:",
+            "            if 'Se' in prompt or 'secim' in prompt.lower():",
+            "                raise RuntimeError('Video Montaj beklenmeyen ek secim istedi; kayitli secim gecersiz olabilir.')",
             "            answer = ''",
             "        print(answer)",
             "        return answer",
@@ -3360,9 +5345,23 @@ if "start_video_montaj_bg" not in globals():
                 klon_video_klasor = temp_klon_video_klasor
             remapped_selection_text = _remap_numeric_selection_text(raw_selection or "T", token_remap)
             selection_text = _vm_bootstrap_ui_to_script_selection(remapped_selection_text or "T")
+        elif source_mode == "Klon Video":
+            video_klasor = ""
+            klon_video_klasor = s.get("klon_video_dir", "")
+            source_video_items = _list_video_montaj_assets().get("clone_videos", [])
+            temp_video_klasor, temp_klon_video_klasor, token_remap = _prepare_mevcut_video_runner_dirs(
+                source_video_items,
+                temp_prefix="video_montaj_klon_video",
+                force_copy=True,
+            )
+            if temp_video_klasor or temp_klon_video_klasor:
+                video_klasor = temp_video_klasor
+                klon_video_klasor = temp_klon_video_klasor or klon_video_klasor
+            remapped_selection_text = _remap_numeric_selection_text(raw_selection or "T", token_remap)
+            selection_text = _vm_bootstrap_ui_to_script_selection(remapped_selection_text or "T")
         else:
             video_klasor = s.get("video_output_dir", "")
-            klon_video_klasor = s.get("klon_video_dir", "")
+            klon_video_klasor = ""
             source_video_items = _list_video_montaj_assets().get("videos", [])
             temp_video_klasor, temp_klon_video_klasor, token_remap = _prepare_mevcut_video_runner_dirs(
                 source_video_items,
@@ -3371,7 +5370,7 @@ if "start_video_montaj_bg" not in globals():
             )
             if temp_video_klasor:
                 video_klasor = temp_video_klasor
-                klon_video_klasor = temp_klon_video_klasor
+                klon_video_klasor = temp_klon_video_klasor or ""
             remapped_selection_text = _remap_numeric_selection_text(raw_selection or "T", token_remap)
             selection_text = _vm_bootstrap_ui_to_script_selection(remapped_selection_text or "T")
 
@@ -3525,6 +5524,7 @@ if "start_toplu_video_bg" not in globals():
             raw_orijinal_ses_seviyesi = preset.get("orijinal_ses_seviyesi", st.session_state.get("tv_orijinal_ses_seviyesi", "100"))
             raw_video_ses_seviyesi = preset.get("video_ses_seviyesi", st.session_state.get("tv_video_ses_seviyesi", "100"))
             raw_orijinal_ses_kaynak_sirasi = preset.get("orijinal_ses_kaynak_sirasi", st.session_state.get("tv_orijinal_ses_kaynak_sirasi", ""))
+            raw_production_limit = preset.get("production_limit", preset.get("uretim_limiti", st.session_state.get("toplu_video_production_limit", 0)))
             raw_baslik = preset.get("baslik", st.session_state.get("tv_baslik", _tv_bootstrap_read_text_file(materyal_paths["baslik"], "")))
         else:
             raw_selection = (st.session_state.get("toplu_video_selection_text") or "T").strip()
@@ -3536,6 +5536,7 @@ if "start_toplu_video_bg" not in globals():
             raw_orijinal_ses_seviyesi = st.session_state.get("tv_orijinal_ses_seviyesi", "100")
             raw_video_ses_seviyesi = st.session_state.get("tv_video_ses_seviyesi", "100")
             raw_orijinal_ses_kaynak_sirasi = st.session_state.get("tv_orijinal_ses_kaynak_sirasi", "")
+            raw_production_limit = st.session_state.get("toplu_video_production_limit", 0)
             raw_baslik = st.session_state.get("tv_baslik", _tv_bootstrap_read_text_file(materyal_paths["baslik"], ""))
 
         source_mode = _normalize_toplu_video_source_mode(raw_source_mode)
@@ -3553,6 +5554,14 @@ if "start_toplu_video_bg" not in globals():
                 force_copy=True,
             )
             remapped_source_selection = _remap_numeric_selection_text((raw_source_selection or "T").strip().upper() or "T", token_remap)
+        elif source_mode == "Klon Video":
+            source_video_items = _list_video_montaj_assets().get("clone_videos", [])
+            temp_video_kaynak_ana_yol, temp_klon_video_kaynak_ana_yol, token_remap = _prepare_mevcut_video_runner_dirs(
+                source_video_items,
+                temp_prefix="toplu_video_klon_video",
+                force_copy=True,
+            )
+            remapped_source_selection = _remap_numeric_selection_text((raw_source_selection or "T").strip().upper() or "T", token_remap)
         else:
             source_video_items = _list_video_montaj_assets().get("videos", [])
             temp_video_kaynak_ana_yol, temp_klon_video_kaynak_ana_yol, token_remap = _prepare_mevcut_video_runner_dirs(
@@ -3567,7 +5576,13 @@ if "start_toplu_video_bg" not in globals():
         ses_efekti_seviyesi = _tv_bootstrap_normalize_percent_text(raw_ses_efekti_seviyesi, 15)
         orijinal_ses_seviyesi = _tv_bootstrap_normalize_percent_text(raw_orijinal_ses_seviyesi, 100)
         video_ses_seviyesi_val = _tv_bootstrap_normalize_percent_text(raw_video_ses_seviyesi, 100)
+        production_limit = _toplu_video_uretim_limiti_normalize(raw_production_limit)
         baslik = (raw_baslik or "").strip()
+        try:
+            with open(os.path.join(CONTROL_DIR, "toplu_video_runtime_limit.txt"), "w", encoding="utf-8") as f:
+                f.write(str(production_limit or 0))
+        except Exception as e:
+            log(f"[WARN] Toplu Video uretim limiti yazilamadi: {e}")
 
         if source_mode == "Eklenen Video":
             video_kaynak_ana_yol = s.get("added_video_dir", "")
@@ -3575,9 +5590,12 @@ if "start_toplu_video_bg" not in globals():
         elif source_mode == "Görsel Oluştur":
             video_kaynak_ana_yol = temp_video_kaynak_ana_yol or s.get("video_output_dir", "")
             klon_video_kaynak_ana_yol = ""
+        elif source_mode == "Klon Video":
+            video_kaynak_ana_yol = temp_video_kaynak_ana_yol or ""
+            klon_video_kaynak_ana_yol = temp_klon_video_kaynak_ana_yol or s.get("klon_video_dir", "")
         else:
             video_kaynak_ana_yol = temp_video_kaynak_ana_yol or s.get("video_output_dir", "")
-            klon_video_kaynak_ana_yol = temp_klon_video_kaynak_ana_yol or s.get("klon_video_dir", "")
+            klon_video_kaynak_ana_yol = temp_klon_video_kaynak_ana_yol or ""
 
         config_payload = {
             "script_path": script_path,
@@ -3591,6 +5609,7 @@ if "start_toplu_video_bg" not in globals():
             "source_mode": source_mode,
             "source_selection_text": (raw_source_selection or "T").strip().upper() or "T",
             "selected_source_indices": selected_source_indices,
+            "production_limit": production_limit,
             "muzik_seviyesi": muzik_seviyesi,
             "ses_efekti_seviyesi": ses_efekti_seviyesi,
             "orijinal_ses_seviyesi": orijinal_ses_seviyesi,
@@ -3618,7 +5637,7 @@ if "start_sosyal_medya_bg" not in globals():
         source_selection = str(ctx.get("source_selection") or "").strip()
         source_root = str(ctx.get("source_root") or "").strip()
 
-        if source_selection in {"Video", "🖼️ Görsel Oluştur"} and source_root:
+        if source_selection in {"Video", "🖼️ Görsel Oluştur", "🎬 Klon Video"} and source_root:
             log(f"[INFO] Sosyal medya ön hazırlığı: {source_selection} kaynağı için video uyumluluğu kontrol ediliyor...")
             compat_summary = _prepare_videos_for_social_media_compat(source_root)
             _log_social_media_compat_prep(compat_summary)
@@ -3802,6 +5821,7 @@ def _get_batch_scripts():
         "gorsel_analiz":    s.get("analiz_script", ""),
         "gorsel_klonlama":  s.get("gorsel_klonlama_script", ""),
         "gorsel_olustur":   s.get("gorsel_olustur_motor", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluştur\gorsel_olustur_motoru.py"),
+        "video_klonla":     s.get("video_klonla_motion_script", MOTION_CONTROL_SCRIPT_DEFAULT),
         "analyze":          s.get("prompt_script", ""),
         "pixverse":         get_active_video_script(s),
         "prompt_duzeltme":  s.get("prompt_duzeltme_script", ""),
@@ -4011,6 +6031,12 @@ if st.session_state.get("batch_mode", False):
         if success:
             st.session_state.status[node] = node_status
 
+            if node == "download":
+                try:
+                    _apply_saved_video_bolum_plans_after_download("batch")
+                except Exception as e:
+                    log(f"[WARN] Kayitli video bolum planlari uygulanamadi: {e}")
+
             # görsel_klonlama kısmi tamamlandı → batch DURDUR
             # Kullanıcı düzenleme yapıp Devam Et'e basacak; aynı adımdan tekrar denenecek.
             if node == "gorsel_klonlama" and node_status == "partial":
@@ -4039,6 +6065,10 @@ if st.session_state.get("batch_mode", False):
                         pv_pos = queue.index("pixverse") if "pixverse" in queue else len(queue)
                         queue.insert(pv_pos, "prompt_duzeltme")
                         st.session_state.batch_queue = list(queue)
+                elif px_err_partial == "timeout":
+                    _partial_rollback = "pixverse"
+                    st.session_state.batch_resume_reason = f"⚠️ Video oluşturma zaman aşımı — {get_video_generation_label(emoji=False)} adımından tekrar denenecek."
+                    log(f"[INFO] Kısmi hata: Video oluşturma zaman aşımı → {get_video_generation_label(emoji=False)} adımından tekrar başlanacak.")
                 elif px_err_partial == "credit":
                     _partial_rollback = "pixverse"
                     st.session_state.batch_resume_reason = f"⚠️ Kredi yetersiz (kısmi hata) — {get_video_generation_label(emoji=False)} adımından tekrar denenecek."
@@ -4092,6 +6122,8 @@ if st.session_state.get("batch_mode", False):
                             _reset_pixverse_retry_state_if_needed()
                         if next_node == "pixverse":
                             _started_ok = start_pixverse_bg("batch")
+                        elif next_node == "video_klonla":
+                            _started_ok = start_video_klonla_bg("batch")
                         elif next_node == "sosyal_medya":
                             _started_ok = start_sosyal_medya_bg("batch")
                         elif next_node == "analyze":
@@ -4125,6 +6157,11 @@ if st.session_state.get("batch_mode", False):
                         pv_pos = queue.index("pixverse") if "pixverse" in queue else len(queue)
                         queue.insert(pv_pos, "prompt_duzeltme")
                         st.session_state.batch_queue = list(queue)
+                elif px_err == "timeout":
+                    # Video bekleme/indirme zaman aşımı → Video Üret'ten tekrar dene
+                    rollback_node = "pixverse"
+                    _resume_reason = f"⚠️ Video oluşturma zaman aşımı — {get_video_generation_label(emoji=False)} adımından tekrar denenecek."
+                    log(f"[INFO] Video oluşturma zaman aşımı tespit edildi → {get_video_generation_label(emoji=False)} adımından tekrar başlanacak.")
                 elif px_err == "credit":
                     # Kredi yetersiz → Video Üret'ten tekrar dene
                     rollback_node = "pixverse"
@@ -4147,6 +6184,23 @@ if st.session_state.get("batch_mode", False):
                     rollback_node = ROLLBACK_START.get("gorsel_klonlama", "gorsel_analiz")
                     _resume_reason = "⚠️ Görsel klonlama hatası — Görsel Analiz'den baştan başlanacak."
                     log("[INFO] Görsel klonlama hatası → Görsel Analiz'den baştan başlanacak.")
+
+            elif node == "video_klonla":
+                rollback_node = "video_klonla"
+                vk_err = _detect_pixverse_error_type(cur_logs)
+                vk_detay = _detect_hata_detay(cur_logs, "video_klonla")
+                if vk_err == "credit" or vk_detay == "Kredi Yetersiz":
+                    _resume_reason = "⚠️ Kredi yetersiz — Video Klonla adımından tekrar denenecek."
+                    log("[INFO] Video Klonla kredi hatası tespit edildi → Video Klonla adımından tekrar başlanacak.")
+                elif str(vk_detay).startswith("Referans Gorsel Boyutu Cok Buyuk"):
+                    _resume_reason = "⚠️ Referans görsel boyutu çok büyük — Video Klonla adımından tekrar denenecek."
+                    log("[INFO] Video Klonla referans görsel boyutu hatası tespit edildi → Video Klonla adımından tekrar başlanacak.")
+                elif str(vk_detay).startswith("Referans Gorsel Yukleme Zaman Asimi"):
+                    _resume_reason = "⚠️ Referans görsel yükleme zaman aşımı — Video Klonla adımından tekrar denenecek."
+                    log("[INFO] Video Klonla referans görsel yükleme zaman aşımı tespit edildi → Video Klonla adımından tekrar başlanacak.")
+                else:
+                    _resume_reason = "⚠️ Video klonlama hatası — Video Klonla adımından tekrar denenecek."
+                    log("[INFO] Video Klonla hatası tespit edildi → Video Klonla adımından tekrar başlanacak.")
 
             else:
                 rollback_node = ROLLBACK_START.get(node, node)
@@ -4173,6 +6227,8 @@ if st.session_state.get("batch_mode", False):
                 if node_key == "pixverse":
                     _reset_pixverse_retry_state_if_needed()
                     _started_ok = start_pixverse_bg("batch")
+                elif node_key == "video_klonla":
+                    _started_ok = start_video_klonla_bg("batch")
                 elif node_key == "sosyal_medya":
                     _started_ok = start_sosyal_medya_bg("batch")
                 else:
@@ -4203,6 +6259,11 @@ if is_single_active and not st.session_state.get("batch_mode", False):
 
     res = st.session_state.get("bg_last_result")
     if res and res.get("owner") == "single":
+        if res.get("node_key") == "download" and bool(res.get("success")):
+            try:
+                _apply_saved_video_bolum_plans_after_download("single")
+            except Exception as e:
+                log(f"[WARN] Kayitli video bolum planlari uygulanamadi: {e}")
         st.session_state.bg_last_result = None; st.session_state.single_mode = False; st.session_state.single_step = None
         st.session_state.durum_ozeti_suppress = False
         if st.session_state.get("single_finish_requested", False): st.session_state.single_finish_requested = False; cleanup_flags()
@@ -4219,6 +6280,7 @@ if is_single_active and not st.session_state.get("batch_mode", False):
             elif step == "gorsel_analiz": _single_started = bg_start("single", "gorsel_analiz", st.session_state.settings["analiz_script"])
             elif step == "gorsel_klonlama": _single_started = bg_start("single", "gorsel_klonlama", st.session_state.settings["gorsel_klonlama_script"])
             elif step == "gorsel_olustur": _single_started = bg_start("single", "gorsel_olustur", st.session_state.settings.get("gorsel_olustur_motor", r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Görsel Oluştur\gorsel_olustur_motoru.py"))
+            elif step == "video_klonla": _single_started = start_video_klonla_bg("single")
             elif step == "prompt_duzeltme": _single_started = bg_start("single", "prompt_duzeltme", st.session_state.settings["prompt_duzeltme_script"])
             elif step == "video_montaj": _single_started = start_video_montaj_bg("single")
             elif step == "toplu_video": _single_started = start_toplu_video_bg("single")
@@ -4305,6 +6367,18 @@ footer {visibility: hidden;}
 .btn-purple button { background: linear-gradient(135deg, #a855f7, #7c3aed) !important; }
 .btn-teal button { background: linear-gradient(135deg, #14b8a6, #0d9488) !important; }
 
+.panel-shutdown-notice {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
 .stButton > button:disabled { opacity: 0.35 !important; filter: grayscale(1) !important; cursor: not-allowed !important; transform: none !important; box-shadow: none !important; }
 
 .btn-primary button:disabled,
@@ -4370,7 +6444,7 @@ if _eff_align == "left":
 elif _eff_align == "right":
     st.markdown('<style>div[data-testid="stDialog"] { justify-content: flex-end !important; padding-right: 2.5% !important; padding-left: 0 !important; }</style>', unsafe_allow_html=True)
 else:
-    st.markdown('<style>div[data-testid="stDialog"] { justify-content: center !important; align-items: center !important; padding: 0 !important; padding-top: 0 !important; }</style>', unsafe_allow_html=True)
+    st.markdown('<style>div[data-testid="stDialog"] { justify-content: center !important; align-items: flex-start !important; padding: 0 !important; padding-top: 20px !important; }</style>', unsafe_allow_html=True)
 
 # Veri isleme yardımcıları
 # --- LOADER HTML HELPER FIX ---
@@ -4408,7 +6482,7 @@ def render_dialog_single_controls(step_match: str | None = None, prefix: str = "
         if not is_active: return
         is_paused = st.session_state.get("single_paused", False)
 
-    label = {"youtube_link":"📺 YouTube Link Toplama","download":"⬇️ Video İndiriliyor","gorsel_analiz":"🖼️ Görsel Analiz","gorsel_klonlama":"🎨 Görsel Klonlama","analyze":"📄 Analiz & Prompt","pixverse":get_video_generation_label(),"gorsel_olustur":"🚀 Görsel Oluştur","prompt_duzeltme":"✏️ Prompt Düzeltme","video_montaj":"🎥️ Video Montaj","toplu_video":"🎬 Toplu Video Montaj","sosyal_medya":"🌐 Sosyal Medya Paylaşım","kredi_kazan":"🎰 Video Üretme Kredisi Kazan","kredi_cek":"📥 Üretilen Kredileri Çek"}.get(step, "İşlem")
+    label = {"youtube_link":"📺 YouTube Link Toplama","download":"⬇️ Video İndiriliyor","gorsel_analiz":"🖼️ Görsel Analiz","gorsel_klonlama":"🎨 Görsel Klonlama","analyze":"📄 Analiz & Prompt","pixverse":get_video_generation_label(),"video_klonla":"🎬 Klon Video Üret","gorsel_olustur":"🚀 Görsel Oluştur","prompt_duzeltme":"✏️ Prompt Düzeltme","video_montaj":"🎥️ Video Montaj","toplu_video":"🎬 Toplu Video Montaj","sosyal_medya":"🌐 Sosyal Medya Paylaşım","kredi_kazan":"🎰 Video Üretme Kredisi Kazan","kredi_cek":"📥 Üretilen Kredileri Çek"}.get(step, "İşlem")
     is_really_running = bg_is_running()
 
     if is_kredi and is_paused:
@@ -4523,6 +6597,10 @@ def render_logs_html() -> str:
 def save_links(text: str, append: bool = False, path: str | None = None):
     target_path = (path or st.session_state.settings["links_file"]).strip()
     result = _save_links_to_path(target_path, text, append=append)
+    if result.get("total", 0) > 0:
+        clear_placeholder = globals().get("_clear_empty_source_placeholder")
+        if callable(clear_placeholder):
+            clear_placeholder()
     if append:
         if result.get("added", 0) > 0:
             log(f"[OK] Link listesi mevcut listenin devamına kaydedildi: +{result['added']} yeni link ({target_path})")
@@ -4584,6 +6662,8 @@ PROMPT_SOURCE_LINK = "link"
 PROMPT_SOURCE_ADDED_VIDEO = "added_video"
 PROMPT_SOURCE_DOWNLOADED_VIDEO = "downloaded_video"
 SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+VIDEO_SETTINGS_OVERRIDE_FILE = os.path.join(CONTROL_DIR, "video_settings_overrides.json")
+EMPTY_SOURCE_PLACEHOLDER_FILE = os.path.join(CONTROL_DIR, "empty_source_placeholder.json")
 
 
 def _normalize_prompt_source_mode(value: str) -> str:
@@ -4642,6 +6722,60 @@ def _get_video_duration_seconds(video_path: str) -> float:
         return 0.0
 
 
+def _get_video_media_metadata(video_path: str) -> dict:
+    """ffprobe ile videonun süre ve çözünürlük bilgisini döndürür."""
+    result = {
+        "duration": 0.0,
+        "width": 0,
+        "height": 0,
+        "rotate": 0,
+    }
+    if not video_path or not os.path.isfile(video_path):
+        return result
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-print_format", "json",
+                "-select_streams", "v:0",
+                "-show_entries", "format=duration:stream=width,height:stream_tags=rotate",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        data = json.loads((probe.stdout or "").strip() or "{}")
+        fmt = data.get("format") if isinstance(data, dict) else {}
+        streams = data.get("streams") if isinstance(data, dict) else []
+        if isinstance(fmt, dict):
+            try:
+                result["duration"] = float(fmt.get("duration") or 0.0)
+            except Exception:
+                result["duration"] = 0.0
+        stream = streams[0] if isinstance(streams, list) and streams else {}
+        if isinstance(stream, dict):
+            try:
+                result["width"] = int(stream.get("width") or 0)
+            except Exception:
+                result["width"] = 0
+            try:
+                result["height"] = int(stream.get("height") or 0)
+            except Exception:
+                result["height"] = 0
+            tags = stream.get("tags") if isinstance(stream.get("tags"), dict) else {}
+            try:
+                result["rotate"] = int(tags.get("rotate") or 0)
+            except Exception:
+                result["rotate"] = 0
+        if result["rotate"] in {90, 270, -90, -270}:
+            result["width"], result["height"] = result["height"], result["width"]
+    except Exception:
+        pass
+    return result
+
+
 def _format_duration(seconds: float) -> str:
     """Saniyeyi okunabilir formata çevirir (ör: 1dk 30sn)."""
     if seconds <= 0:
@@ -4664,23 +6798,75 @@ def _format_mmss(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _format_mmss_ms(seconds: float) -> str:
+    """Saniyeyi M:SS:mmm formatina cevirir (orn: 0:12:350)."""
+    try:
+        total_ms = int(round(float(seconds) * 1000))
+    except Exception:
+        total_ms = 0
+    total_ms = max(0, total_ms)
+    m = total_ms // 60000
+    kalan_ms = total_ms % 60000
+    s = kalan_ms // 1000
+    ms = kalan_ms % 1000
+    return f"{m}:{s:02d}:{ms:03d}"
+
+
+def _format_duration_ms(seconds: float) -> str:
+    """Saniyeyi milisaniye hassasiyetinde okunabilir formata cevirir."""
+    try:
+        total_ms = int(round(float(seconds) * 1000))
+    except Exception:
+        total_ms = 0
+    total_ms = max(0, total_ms)
+    m = total_ms // 60000
+    kalan_ms = total_ms % 60000
+    s = kalan_ms // 1000
+    ms = kalan_ms % 1000
+    if m > 0:
+        return f"{m}dk {s}sn {ms}ms"
+    if s > 0:
+        return f"{s}sn {ms}ms"
+    return f"{ms}ms"
+
+
+def _format_ffmpeg_seconds(seconds: float) -> str:
+    """ffmpeg'e milisaniye hassasiyetinde saniye degeri verir."""
+    try:
+        value = max(0.0, float(seconds))
+    except Exception:
+        value = 0.0
+    return f"{value:.3f}"
+
+
 def _parse_mmss(text: str) -> float:
-    """M:SS veya SS formatını saniyeye çevirir. Hatalıysa -1 döner."""
+    """M:SS, M:SS.mmm, M:SS:mmm veya SS formatini saniyeye cevirir."""
     text = (text or "").strip().replace(",", ".")
     if not text:
         return -1
     if ":" in text:
         parts = text.split(":")
-        if len(parts) != 2:
-            return -1
         try:
-            m = int(parts[0])
-            s = float(parts[1])
-            return m * 60 + s
+            if len(parts) == 2:
+                m = int(parts[0])
+                s = float(parts[1])
+                value = m * 60 + s
+                return round(value, 3) if value >= 0 else -1
+            if len(parts) == 3:
+                m = int(parts[0])
+                s = int(parts[1])
+                ms_text = parts[2].strip()
+                if not ms_text.isdigit() or len(ms_text) > 3:
+                    return -1
+                ms = int(ms_text.ljust(3, "0"))
+                value = m * 60 + s + (ms / 1000)
+                return round(value, 3) if value >= 0 else -1
         except (ValueError, TypeError):
             return -1
+        return -1
     try:
-        return float(text)
+        value = float(text)
+        return round(value, 3) if value >= 0 else -1
     except (ValueError, TypeError):
         return -1
 
@@ -4701,13 +6887,12 @@ def _split_video_by_segments(video_path: str, segments: list, output_dir: str, b
         out_path = os.path.join(klasor, out_name)
         duration = end - start
         try:
-            # Re-encode ile bölme: -ss input seeking (hızlı + doğru keyframe),
-            # video ve ses yeniden encode edilerek donuk görüntü sorunu önlenir.
+            # Re-encode ile milisaniye hassasiyetinde kesim yap.
             subprocess.run(
                 ["ffmpeg", "-y",
-                 "-ss", str(start),
                  "-i", video_path,
-                 "-t", str(duration),
+                 "-ss", _format_ffmpeg_seconds(start),
+                 "-t", _format_ffmpeg_seconds(duration),
                  "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                  "-c:a", "aac", "-b:a", "192k",
                  "-avoid_negative_ts", "make_zero",
@@ -4720,6 +6905,68 @@ def _split_video_by_segments(video_path: str, segments: list, output_dir: str, b
         except Exception:
             pass
     return results
+
+
+def _render_video_bolum_precision_controls() -> None:
+    rate_options = ["0.25x", "0.5x", "0.75x", "1x"]
+    selected_rate = st.radio(
+        "Oynatma hızı",
+        rate_options,
+        index=rate_options.index(st.session_state.get("dlg_bolum_playback_rate", "0.5x"))
+        if st.session_state.get("dlg_bolum_playback_rate", "0.5x") in rate_options else 1,
+        horizontal=True,
+        key="dlg_bolum_playback_rate",
+    )
+    try:
+        rate_value = float(str(selected_rate).replace("x", ""))
+    except Exception:
+        rate_value = 0.5
+
+    _st_components.html(
+        f"""
+        <div style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #f4f4f7;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid rgba(255,255,255,.14); border-radius:8px; background:rgba(255,255,255,.045);">
+            <div style="font-size:13px; color:rgba(244,244,247,.72);">Geçerli zaman</div>
+            <div id="video-bolum-ms-clock" style="font-size:18px; font-weight:700; font-variant-numeric:tabular-nums;">0:00:000</div>
+          </div>
+        </div>
+        <script>
+        (function() {{
+          const rate = {rate_value};
+          const clock = document.getElementById("video-bolum-ms-clock");
+          function findPreviewVideo() {{
+            try {{
+              const videos = Array.from(window.parent.document.querySelectorAll("video"));
+              return videos.length ? videos[videos.length - 1] : null;
+            }} catch (err) {{
+              return null;
+            }}
+          }}
+          function formatTime(seconds) {{
+            const totalMs = Math.max(0, Math.round((seconds || 0) * 1000));
+            const minutes = Math.floor(totalMs / 60000);
+            const sec = Math.floor((totalMs % 60000) / 1000);
+            const ms = totalMs % 1000;
+            return `${{minutes}}:${{String(sec).padStart(2, "0")}}:${{String(ms).padStart(3, "0")}}`;
+          }}
+          function tick() {{
+            const video = findPreviewVideo();
+            if (video) {{
+              if (Math.abs(video.playbackRate - rate) > 0.001) {{
+                video.playbackRate = rate;
+              }}
+              clock.textContent = formatTime(video.currentTime);
+            }} else {{
+              clock.textContent = "0:00:000";
+            }}
+            window.requestAnimationFrame(tick);
+          }}
+          tick();
+        }})();
+        </script>
+        """,
+        height=74,
+    )
 
 
 def _list_added_video_entries() -> list:
@@ -4757,7 +7004,7 @@ def _list_added_video_entries() -> list:
 
 
 def _count_added_videos() -> int:
-    return len(_list_added_video_entries())
+    return len(_list_added_video_preview_entries())
 
 
 def _list_download_video_entries() -> list:
@@ -4817,29 +7064,33 @@ def _get_gorsel_analiz_source_label() -> str:
 
 def _list_toplu_video_added_source_items() -> list:
     items = []
-    for idx, entry in enumerate(_list_added_video_entries(), start=1):
+    for idx, entry in enumerate(_list_added_video_preview_entries(), start=1):
+        exists = bool(str(entry.get("video_path") or "").strip())
+        planned = bool(entry.get("planned")) and not exists
+        label = f"[{idx}] Eklenen Video {entry.get('no', idx)}"
+        if planned:
+            label += " (planli)"
         items.append({
             "token": str(idx),
             "script_token": str(idx - 1),
-            "label": f"[{idx}] Eklenen Video {entry.get('no', idx)}",
+            "label": label,
             "path": entry.get("video_path", ""),
-            "exists": True,
-            "expected": False,
+            "exists": exists,
+            "expected": not exists,
             "video_no": int(entry.get("no", idx) or idx),
             "source_kind": "added_video",
+            "planned": planned,
+            "source_no": entry.get("source_no"),
+            "segment_no": entry.get("segment_no"),
+            "segment_start": entry.get("segment_start"),
+            "segment_end": entry.get("segment_end"),
+            "source_title": entry.get("source_title"),
         })
     return items
 
 
 def _count_prompt_links() -> int:
-    links_file = st.session_state.settings.get("links_file", "")
-    if not links_file or not os.path.exists(links_file):
-        return 0
-    try:
-        with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
-            return len([ln for ln in f.read().splitlines() if ln.strip()])
-    except Exception:
-        return 0
+    return _count_real_prompt_links()
 
 
 def _get_effective_prompt_source_mode() -> str:
@@ -4997,7 +7248,7 @@ def get_klasor_gorselleri(klasor_adi):
     if not os.path.isdir(k_yol): return[]
     try:
         gorseller =[f for f in os.listdir(k_yol) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp'))]
-        gorseller.sort(key=natural_sort_key); return gorseller
+        gorseller.sort(key=lambda name: (0 if str(name).casefold().startswith("start.") else 1 if str(name).casefold().startswith("end.") else 2, natural_sort_key(name))); return gorseller
     except Exception: return[]
 
 def gorsel_sec_ve_diger_sil(klasor_adi, secilen_gorsel):
@@ -5012,6 +7263,83 @@ def gorsel_sec_ve_diger_sil(klasor_adi, secilen_gorsel):
         log(f"[OK] {klasor_adi}: '{secilen_gorsel}' tutuldu, {silinen} görsel silindi."); return True
     except Exception as e: log(f"[ERROR] Görsel silme hatası: {e}"); return False
 
+def gorsel_secimini_transition_olarak_kaydet(klasor_adi, start_gorsel, end_gorsel):
+    k_yol = os.path.join(st.session_state.settings.get("gorsel_analiz_dir", ""), klasor_adi)
+    if not os.path.isdir(k_yol):
+        return False
+    start_path = os.path.join(k_yol, str(start_gorsel or "").strip())
+    end_path = os.path.join(k_yol, str(end_gorsel or "").strip())
+    if not (os.path.isfile(start_path) and os.path.isfile(end_path)):
+        return False
+    if os.path.abspath(start_path) == os.path.abspath(end_path):
+        return False
+    try:
+        saved_paths = replace_folder_images_with_standard_images(
+            k_yol,
+            [("start", start_path), ("end", end_path)],
+        )
+        if len(saved_paths) == 2:
+            log(f"[OK] {klasor_adi}: Start/End frame kaydedildi -> start.png, end.png")
+            return True
+    except Exception as e:
+        log(f"[ERROR] Transition frame kaydedilemedi: {e}")
+    return False
+
+
+def _normalize_gorsel_klon_prompt_entry(value):
+    if isinstance(value, dict):
+        shared = str(value.get("shared") or "").strip()
+        start = str(value.get("start") or "").strip()
+        end = str(value.get("end") or "").strip()
+        if shared or start or end:
+            return {"shared": shared, "start": start, "end": end}
+        return ""
+    return str(value or "").strip()
+
+
+def _gorsel_klon_prompt_has_value(value, require_transition_pair: bool = False) -> bool:
+    normalized = _normalize_gorsel_klon_prompt_entry(value)
+    if isinstance(normalized, dict):
+        shared = str(normalized.get("shared") or "").strip()
+        start = str(normalized.get("start") or "").strip()
+        end = str(normalized.get("end") or "").strip()
+        if require_transition_pair:
+            return bool((start or shared) and (end or shared))
+        return bool(shared or start or end)
+    return bool(str(normalized or "").strip())
+
+
+def _gorsel_klon_prompt_frame_value(value, frame_name: str) -> str:
+    normalized = _normalize_gorsel_klon_prompt_entry(value)
+    if isinstance(normalized, dict):
+        shared = str(normalized.get("shared") or "").strip()
+        start = str(normalized.get("start") or "").strip()
+        end = str(normalized.get("end") or "").strip()
+        if str(frame_name or "").strip().lower() == "start":
+            return start or shared
+        if str(frame_name or "").strip().lower() == "end":
+            return end or shared
+        return shared or start or end
+    return str(normalized or "").strip()
+
+
+def _gorsel_klon_prompt_display_text(value) -> str:
+    normalized = _normalize_gorsel_klon_prompt_entry(value)
+    if isinstance(normalized, dict):
+        shared = str(normalized.get("shared") or "").strip()
+        start = str(normalized.get("start") or "").strip()
+        end = str(normalized.get("end") or "").strip()
+        parts = []
+        if shared:
+            parts.append(shared)
+        if start:
+            parts.append(f"Start: {start}")
+        if end:
+            parts.append(f"End: {end}")
+        return " | ".join(parts)
+    return str(normalized or "").strip()
+
+
 def gorsel_duzelt_oku():
     path = st.session_state.settings.get("gorsel_duzelt_txt", "")
     res = {}
@@ -5019,8 +7347,28 @@ def gorsel_duzelt_oku():
     try:
         with open(path, 'r', encoding='utf-8') as f:
             for line in f:
-                match = re.match(r"Görsel\s+(\d+)\s*:\s*(.*)", line.strip(), re.IGNORECASE)
-                if match: res[int(match.group(1))] = match.group(2).strip()
+                temiz_satir = line.strip()
+                pair_match = re.match(r"Görsel\s+(\d+)\s+(Start|End)\s*:\s*(.*)", temiz_satir, re.IGNORECASE)
+                if pair_match:
+                    no = int(pair_match.group(1))
+                    frame_name = "start" if pair_match.group(2).strip().lower() == "start" else "end"
+                    mevcut = _normalize_gorsel_klon_prompt_entry(res.get(no, ""))
+                    if not isinstance(mevcut, dict):
+                        mevcut = {"shared": str(mevcut or "").strip(), "start": "", "end": ""}
+                    mevcut[frame_name] = pair_match.group(3).strip()
+                    res[no] = mevcut
+                    continue
+                match = re.match(r"Görsel\s+(\d+)\s*:\s*(.*)", temiz_satir, re.IGNORECASE)
+                if match:
+                    no = int(match.group(1))
+                    text_value = match.group(2).strip()
+                    mevcut = res.get(no, "")
+                    if isinstance(mevcut, dict):
+                        mevcut = _normalize_gorsel_klon_prompt_entry(mevcut)
+                        mevcut["shared"] = text_value
+                        res[no] = mevcut
+                    else:
+                        res[no] = text_value
     except Exception: pass
     return res
 
@@ -5030,7 +7378,20 @@ def gorsel_duzelt_kaydet(data: dict):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            for no in sorted(data.keys()): f.write(f"Görsel {no}: {data[no]}\n")
+            for no in sorted(data.keys()):
+                value = _normalize_gorsel_klon_prompt_entry(data.get(no, ""))
+                if isinstance(value, dict):
+                    shared = str(value.get("shared") or "").strip()
+                    start = str(value.get("start") or "").strip()
+                    end = str(value.get("end") or "").strip()
+                    if shared:
+                        f.write(f"Görsel {no}: {shared}\n")
+                    if start:
+                        f.write(f"Görsel {no} Start: {start}\n")
+                    if end:
+                        f.write(f"Görsel {no} End: {end}\n")
+                elif str(value or "").strip():
+                    f.write(f"Görsel {no}: {value}\n")
         log(f"[OK] Görsel Düzelt.txt kaydedildi."); return True
     except Exception: return False
 
@@ -5051,41 +7412,97 @@ def _gorsel_referans_klasoru() -> str:
     return ""
 
 
-def gorsel_referans_kaydet(gorsel_no: int, uploaded_file) -> bool:
-    """Yüklenen referans görseli klasöre kaydeder. Daha önce aynı numara için görsel varsa siler."""
+def _normalize_gorsel_referans_slot(frame_name: str | None = None) -> str:
+    raw = str(frame_name or "").strip().lower()
+    if raw == "start":
+        return "start"
+    if raw == "end":
+        return "end"
+    return ""
+
+
+def _gorsel_referans_dosyasi_eslesir(fname: str, gorsel_no: int, frame_name: str | None = None) -> bool:
+    slot = _normalize_gorsel_referans_slot(frame_name)
+    if slot:
+        pattern = rf"^ref_{gorsel_no}_{slot}(?:__\d+)?\.(?:jpg|jpeg|png|bmp|webp|gif)$"
+    else:
+        pattern = rf"^ref_{gorsel_no}(?:__\d+)?\.(?:jpg|jpeg|png|bmp|webp|gif)$"
+    return bool(
+        re.match(
+            pattern,
+            str(fname or "").strip(),
+            re.IGNORECASE,
+        )
+    )
+
+
+def gorsel_referans_yollari(gorsel_no: int, frame_name: str | None = None) -> list[str]:
+    """Belirli görsel numarasına ait tüm referans görsel yollarını döndürür."""
+    klasor = _gorsel_referans_klasoru()
+    if not klasor or not os.path.isdir(klasor):
+        return []
+    bulunan = []
+    try:
+        for fname in sorted(os.listdir(klasor), key=natural_sort_key):
+            if _gorsel_referans_dosyasi_eslesir(fname, gorsel_no, frame_name):
+                bulunan.append(os.path.join(klasor, fname))
+    except Exception:
+        return []
+    return bulunan
+
+
+def gorsel_referans_kaydet(gorsel_no: int, uploaded_file, frame_name: str | None = None) -> bool:
+    """Yüklenen tek veya çoklu referans görsellerini klasöre kaydeder."""
     klasor = _gorsel_referans_klasoru()
     if not klasor:
         return False
+    if uploaded_file is None:
+        return False
+    uploaded_files = uploaded_file if isinstance(uploaded_file, (list, tuple)) else [uploaded_file]
+    uploaded_files = [dosya for dosya in uploaded_files if dosya is not None]
+    if not uploaded_files:
+        return False
     try:
         os.makedirs(klasor, exist_ok=True)
-        # Mevcut referans görselini sil
+        slot = _normalize_gorsel_referans_slot(frame_name)
+        # Mevcut referans görsellerini sil
         for fname in os.listdir(klasor):
-            if fname.startswith(f"ref_{gorsel_no}_") or fname == f"ref_{gorsel_no}.png":
+            if _gorsel_referans_dosyasi_eslesir(fname, gorsel_no, frame_name):
                 try:
                     os.remove(os.path.join(klasor, fname))
                 except Exception:
                     pass
-        ext = os.path.splitext(getattr(uploaded_file, "name", "") or "img.png")[1].lower()
-        if ext not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
-            ext = ".png"
-        dosya_adi = f"ref_{gorsel_no}{ext}"
-        with open(os.path.join(klasor, dosya_adi), "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        log(f"[OK] Referans görsel kaydedildi: {dosya_adi}")
+        kaydedilenler = []
+        tekli_kayit = len(uploaded_files) == 1
+        for sira, dosya in enumerate(uploaded_files, start=1):
+            ext = os.path.splitext(getattr(dosya, "name", "") or "img.png")[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png", ".bmp", ".webp"):
+                ext = ".png"
+            if tekli_kayit:
+                dosya_adi = f"ref_{gorsel_no}_{slot}{ext}" if slot else f"ref_{gorsel_no}{ext}"
+            else:
+                dosya_adi = f"ref_{gorsel_no}_{slot}__{sira:02d}{ext}" if slot else f"ref_{gorsel_no}__{sira:02d}{ext}"
+            with open(os.path.join(klasor, dosya_adi), "wb") as f:
+                f.write(dosya.getbuffer())
+            kaydedilenler.append(dosya_adi)
+        if len(kaydedilenler) == 1:
+            log(f"[OK] Referans görsel kaydedildi: {kaydedilenler[0]}")
+        else:
+            log(f"[OK] {gorsel_no}. görsel için {len(kaydedilenler)} referans görsel kaydedildi.")
         return True
     except Exception as e:
         log(f"[ERROR] Referans görsel kaydedilemedi: {e}")
         return False
 
 
-def gorsel_referans_sil(gorsel_no: int) -> bool:
+def gorsel_referans_sil(gorsel_no: int, frame_name: str | None = None) -> bool:
     """Belirli görsel numarasının referans görselini siler."""
     klasor = _gorsel_referans_klasoru()
     if not klasor or not os.path.isdir(klasor):
         return False
     try:
         for fname in os.listdir(klasor):
-            if fname.startswith(f"ref_{gorsel_no}_") or re.match(rf"ref_{gorsel_no}\\..+", fname):
+            if _gorsel_referans_dosyasi_eslesir(fname, gorsel_no, frame_name):
                 try:
                     os.remove(os.path.join(klasor, fname))
                 except Exception:
@@ -5110,18 +7527,37 @@ def gorsel_referans_tumunu_sil() -> bool:
 
 def gorsel_referans_yolu(gorsel_no: int) -> str:
     """Belirli görsel numarasının referans görsel yolunu döndürür (yoksa boş string)."""
-    klasor = _gorsel_referans_klasoru()
-    if not klasor or not os.path.isdir(klasor):
-        return ""
-    try:
-        for fname in os.listdir(klasor):
-            if fname.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp")):
-                m = re.match(rf"ref_{gorsel_no}(\..+)$", fname)
-                if m:
-                    return os.path.join(klasor, fname)
-    except Exception:
-        pass
-    return ""
+    yollar = gorsel_referans_yollari(gorsel_no)
+    return yollar[0] if yollar else ""
+
+def _apply_pending_gklonla_form_ui_state():
+    pending = st.session_state.pop("gklonla_pending_form_ui", None)
+    if not isinstance(pending, dict):
+        return
+
+    clear_text_keys = bool(pending.get("clear_text_keys"))
+    clear_ref_keys = bool(pending.get("clear_ref_keys"))
+    hedefler = set()
+    for value in pending.get("targets") or []:
+        try:
+            hedefler.add(int(value))
+        except Exception:
+            continue
+
+    for key in list(st.session_state.keys()):
+        match = re.match(r"^(dzt|dzt_start|dzt_end|ref_up|ref_saved|ref_up_start|ref_up_end|ref_saved_start|ref_saved_end)_(\d+)$", str(key))
+        if not match:
+            continue
+        key_tipi = match.group(1)
+        key_no = int(match.group(2))
+        if hedefler and key_no not in hedefler:
+            continue
+        if key_tipi in ("dzt", "dzt_start", "dzt_end") and not clear_text_keys:
+            continue
+        if key_tipi in ("ref_up", "ref_saved", "ref_up_start", "ref_up_end", "ref_saved_start", "ref_saved_end") and not clear_ref_keys:
+            continue
+        st.session_state.pop(key, None)
+
 
 def prompt_duzeltme_oku():
     """düzeltme.txt dosyasını oku — her Prompt N bloğundaki kullanıcı ek metnini döndür."""
@@ -5175,8 +7611,9 @@ def gorsel_klonlama_notlarini_prompta_aktar(data: dict):
 
         for no in sorted(guncel_data.keys()):
             yeni_deger = guncel_data.get(no, "")
-            if yeni_deger:
-                mevcut_data[no] = yeni_deger
+            display_value = _gorsel_klon_prompt_display_text(yeni_deger)
+            if display_value:
+                mevcut_data[no] = display_value
             else:
                 mevcut_data.pop(no, None)
             st.session_state.pop(f"pdzt_{no}", None)
@@ -5269,6 +7706,10 @@ def sosyal_medya_ensure_files(sync_source_selection: bool = False):
                 video_dir = (st.session_state.settings.get("toplu_video_output_dir") or "").strip()
                 if not video_dir:
                     video_dir = r"C:\Users\User\Desktop\Otomasyon\Video\Toplu Montaj"
+            elif kaynak_secim == "🎬 Klon Video":
+                video_dir = (st.session_state.settings.get("klon_video_dir") or st.session_state.settings.get("video_klonla_dir") or "").strip()
+                if not video_dir:
+                    video_dir = r"C:\Users\User\Desktop\Otomasyon\Klon Video"
             elif kaynak_secim == "🖼️ Görsel Oluştur":
                 video_dir = (st.session_state.settings.get("video_output_dir") or "").strip()
                 if not video_dir:
@@ -5509,16 +7950,30 @@ def _sm_klasorden_video_numaralari(video_root: str) -> set[int]:
 
 
 def sosyal_medya_eklenen_video_numaralari() -> set[int]:
-    return {int(item.get("no")) for item in _list_added_video_entries() if str(item.get("no", "")).isdigit()}
+    return {int(item.get("no")) for item in _list_added_video_preview_entries() if str(item.get("no", "")).isdigit()}
 
 
 def sosyal_medya_toplu_video_numaralari() -> set[int]:
     """Toplu Video Montaj çıktı klasöründeki mevcut videolardan veya kaydedilmiş preset'ten üretilecek video numaralarını döndürür."""
     toplu_dir = (st.session_state.settings.get("toplu_video_output_dir") or "").strip()
+    saved_production_limit = 0
+    try:
+        preset_path = os.path.join(CONTROL_DIR, "toplu_video_preset.json")
+        if os.path.exists(preset_path):
+            with open(preset_path, "r", encoding="utf-8") as fp:
+                preset_for_limit = json.load(fp)
+            if isinstance(preset_for_limit, dict):
+                saved_production_limit = _toplu_video_uretim_limiti_normalize(
+                    preset_for_limit.get("production_limit", preset_for_limit.get("uretim_limiti", 0))
+                )
+    except Exception:
+        saved_production_limit = 0
     # Önce mevcut videoları kontrol et
     if toplu_dir:
         nums = _sm_klasorden_video_numaralari(toplu_dir)
         if nums:
+            if saved_production_limit > 0:
+                return set(sorted(nums)[:saved_production_limit])
             return nums
     # Klasörde video yoksa → preset'ten hesapla
     try:
@@ -5532,6 +7987,8 @@ def sosyal_medya_toplu_video_numaralari() -> set[int]:
                     toplam_kaynak = _count_added_videos()
                 elif source_mode == "Görsel Oluştur":
                     toplam_kaynak = len(_list_saved_gorsel_motion_prompt_entries())
+                elif source_mode == "Klon Video":
+                    toplam_kaynak = len(_collect_video_klonla_runtime_items("batch"))
                 else:
                     links_file = (st.session_state.settings.get("links_file") or "").strip()
                     toplam_kaynak = 0
@@ -5553,6 +8010,10 @@ def sosyal_medya_toplu_video_numaralari() -> set[int]:
                     try:
                         uretilecek = _toplu_video_hesapla_uretilecek_video_sayisi(efektif_kaynak_sayisi, secim_metni)
                         if uretilecek and uretilecek > 0:
+                            uretilecek = _toplu_video_uretim_limiti_normalize(
+                                preset.get("production_limit", preset.get("uretim_limiti", 0)),
+                                uretilecek,
+                            ) or uretilecek
                             return set(range(1, uretilecek + 1))
                     except Exception:
                         pass
@@ -5579,6 +8040,17 @@ def sosyal_medya_video_montaj_numaralari() -> set[int]:
                 return {1}
     except Exception:
         pass
+    return set()
+
+
+def sosyal_medya_klon_video_numaralari() -> set[int]:
+    planned_count = _planned_video_klonla_output_count()
+    if planned_count > 0:
+        return set(range(1, planned_count + 1))
+
+    klon_dir = (st.session_state.settings.get("klon_video_dir") or st.session_state.settings.get("video_klonla_dir") or "").strip()
+    if klon_dir:
+        return _sm_klasorden_video_numaralari(klon_dir)
     return set()
 
 
@@ -5836,22 +8308,48 @@ def _sosyal_medya_hesap_satirini_coz(line: str):
     return {"email": email, "password": password, "token": "", "selected": True}
 
 
+def _sosyal_medya_hesap_stratejisi_normalize(value: str | None = None, *, loop_accounts: bool | None = None, mode: str | None = None, legacy_safe: bool = False) -> str:
+    mode_value = str(mode or "").strip().lower()
+    if mode_value and mode_value != "bulk":
+        return "single"
+
+    raw = str(value or "").strip().casefold()
+    if raw:
+        if any(key in raw for key in ("tüm hesap", "tum hesap", "fanout", "fan-out", "hepsinde", "all accounts")):
+            return "fanout"
+        if any(key in raw for key in ("sırayla", "sirayla", "dağıt", "dagit", "round", "round_robin", "round-robin", "döngü", "dongu")):
+            return "round_robin"
+
+    # Eski kayıtlarda yalnızca "Hesap Döngü" alanı vardı ve kapalıyken
+    # her videoyu tüm hesaplarda çoğaltıyordu. Güvenli göç için eski
+    # kayıtları varsayılan olarak sırayla dağıt moduna alıyoruz.
+    if loop_accounts is not None:
+        if legacy_safe:
+            return "round_robin"
+        return "round_robin" if bool(loop_accounts) else "fanout"
+    return "round_robin"
+
+
 def sosyal_medya_hesap_konfig_oku() -> dict:
     yollar = sosyal_medya_ensure_files()
     raw = sosyal_medya_read_text(yollar.get("hesap", ""), "")
-    cfg = {"mode": "single", "loop_accounts": False, "accounts": [], "raw": raw}
+    cfg = {"mode": "single", "loop_accounts": False, "strategy": "single", "accounts": [], "raw": raw}
     if not raw:
         return cfg
 
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     mode = None
     loop_accounts = False
+    strategy = ""
     accounts = []
 
     for line in lines:
         low = line.casefold()
         if low.startswith(("hesap modu:", "mod:", "mode:")):
             mode = "bulk" if any(k in low for k in ("toplu", "bulk", "çoklu", "coklu")) else "single"
+            continue
+        if low.startswith(("paylaşım stratejisi:", "paylasim stratejisi:", "strateji:", "strategy:")):
+            strategy = line.split(":", 1)[1].strip()
             continue
         if low.startswith(("hesap döngü:", "hesap dongu:", "döngü:", "dongu:", "loop:")):
             loop_accounts = any(k in low for k in ("evet", "açık", "acik", "on", "true", "1", "+"))
@@ -5870,8 +8368,15 @@ def sosyal_medya_hesap_konfig_oku() -> dict:
     if mode is None:
         mode = "bulk" if len(accounts) > 1 else "single"
 
+    normalized_strategy = _sosyal_medya_hesap_stratejisi_normalize(
+        strategy,
+        loop_accounts=loop_accounts,
+        mode=mode,
+        legacy_safe=True,
+    )
     cfg["mode"] = mode
-    cfg["loop_accounts"] = bool(loop_accounts)
+    cfg["strategy"] = normalized_strategy
+    cfg["loop_accounts"] = (normalized_strategy == "round_robin") if mode == "bulk" else False
     # Her hesabın selected bilgisini koru (yoksa varsayılan True)
     for acc in accounts:
         if "selected" not in acc:
@@ -5897,8 +8402,16 @@ def sosyal_medya_hesap_konfig_kaydet(mode: str, accounts: list, loop_accounts: b
         elif email and password:
             temiz_hesaplar.append({"token": "", "email": email, "password": password, "selected": selected})
 
+    strategy = _sosyal_medya_hesap_stratejisi_normalize(
+        None,
+        loop_accounts=loop_accounts,
+        mode=mode,
+    )
     parts = [f"Hesap Modu: {'Toplu Hesap' if str(mode) == 'bulk' else 'Tek Hesap'}"]
-    parts.append(f"Hesap Döngü: {'Açık' if bool(loop_accounts) else 'Kapalı'}")
+    if str(mode) == "bulk":
+        strategy_label = "Sırayla Dağıt" if strategy == "round_robin" else "Her Videoyu Tüm Hesaplarda Paylaş"
+        parts.append(f"Paylaşım Stratejisi: {strategy_label}")
+    parts.append(f"Hesap Döngü: {'Açık' if strategy == 'round_robin' and str(mode) == 'bulk' else 'Kapalı'}")
     parts.append("Hesaplar:")
     for item in temiz_hesaplar:
         secili_str = "Evet" if item.get("selected", True) else "Hayır"
@@ -5918,10 +8431,18 @@ def sosyal_medya_hesap_konfig_kaydet(mode: str, accounts: list, loop_accounts: b
 def sosyal_medya_temizle(clear_legacy: bool = True, preserve_accounts: bool = True) -> bool:
     yollar = sosyal_medya_ensure_files()
     ok_list = []
+    temiz_defaults = {
+        "aciklama": "",
+        "baslik": "",
+        "platform": "",
+        "zamanlama": "",
+        "video_kaynak": "",
+        "kaynak_secim": "Link",
+    }
     for key in ("aciklama", "baslik", "platform", "zamanlama", "video_kaynak", "kaynak_secim"):
         hedef = yollar.get(key, "")
         if hedef:
-            ok_list.append(sosyal_medya_write_text(hedef, ""))
+            ok_list.append(sosyal_medya_write_text(hedef, temiz_defaults.get(key, "")))
 
     if not preserve_accounts and yollar.get("hesap"):
         ok_list.append(sosyal_medya_write_text(yollar.get("hesap", ""), ""))
@@ -5967,6 +8488,85 @@ def cleanup_social_media_state_files(clear_saved_plan: bool = False, preserve_ac
     if cleaned:
         log(f"[OK] Sosyal medya temizliği tamamlandı: {', '.join(cleaned)}")
     return cleaned
+
+
+SOCIAL_MEDIA_OLD_UPLOAD_CLEANUP_DAYS = 30
+
+
+def _load_sosyal_medya_runtime_module(script_path: str):
+    target_path = os.path.abspath(str(script_path or "").strip())
+    if not target_path:
+        raise FileNotFoundError("Sosyal medya script yolu bulunamadı.")
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"Sosyal medya script yolu geçersiz: {target_path}")
+
+    module_name = f"_sosyal_medya_runtime_{abs(hash(target_path))}"
+    spec = importlib.util.spec_from_file_location(module_name, target_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Sosyal medya modülü yüklenemedi.")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def sosyal_medya_temizle_eski_yuklemeler(older_than_days: int = SOCIAL_MEDIA_OLD_UPLOAD_CLEANUP_DAYS) -> tuple[bool, str]:
+    yollar = sosyal_medya_ensure_files()
+    script_path = str(yollar.get("script") or "").strip()
+
+    try:
+        module = _load_sosyal_medya_runtime_module(script_path)
+    except Exception as e:
+        msg = f"Temizleme modülü açılamadı: {e}"
+        log(f"[ERROR] {msg}")
+        return False, msg
+
+    cleanup_fn = getattr(module, "cleanup_old_storage_uploads", None)
+    if not callable(cleanup_fn):
+        msg = "Sosyal medya scriptinde R2 temizleme desteği bulunamadı."
+        log(f"[ERROR] {msg}")
+        return False, msg
+
+    try:
+        result = cleanup_fn(older_than_days=older_than_days)
+    except Exception as e:
+        msg = f"Eski paylaşımlar temizlenemedi: {e}"
+        log(f"[ERROR] {msg}")
+        return False, msg
+
+    if not isinstance(result, dict):
+        msg = "Temizleme sonucu okunamadı."
+        log(f"[ERROR] {msg}")
+        return False, msg
+
+    errors = [str(item).strip() for item in (result.get("errors") or []) if str(item).strip()]
+    for err in errors[:3]:
+        log(f"[WARN] R2 temizleme uyarısı: {err}")
+
+    bucket = str(result.get("bucket") or "").strip()
+    prefix = str(result.get("prefix") or "").strip()
+    deleted = int(result.get("deleted") or 0)
+    matched = int(result.get("matched") or 0)
+    message = str(result.get("message") or "").strip()
+    suffix = []
+    if bucket:
+        suffix.append(f"bucket={bucket}")
+    if prefix:
+        suffix.append(f"prefix={prefix}")
+    suffix_text = f" ({', '.join(suffix)})" if suffix else ""
+
+    if result.get("ok"):
+        if matched == 0:
+            log(f"[INFO] R2 eski paylaşım temizliği tamamlandı: {older_than_days} günden eski dosya bulunamadı{suffix_text}")
+        elif errors:
+            log(f"[WARN] R2 eski paylaşım temizliği kısmen tamamlandı: {deleted}/{matched} dosya silindi{suffix_text}")
+        else:
+            log(f"[OK] R2 eski paylaşım temizliği tamamlandı: {deleted} dosya silindi{suffix_text}")
+        return True, message or "Temizlik tamamlandı."
+
+    msg = message or "Eski paylaşımlar temizlenemedi."
+    log(f"[ERROR] {msg}")
+    return False, msg
 
 
 def _sm_apply_rows_to_widget_state(rows: list | None = None):
@@ -6140,7 +8740,9 @@ def _sm_accounts_state_init(force: bool = False):
         if (not _rows_have_saved_account(current_rows)) and _rows_have_saved_account(cfg_rows):
             should_refresh_loop = True
     if should_refresh_loop:
-        st.session_state["sm_hesap_dongu"] = bool(cfg.get("loop_accounts", False))
+        has_saved_accounts = _rows_have_saved_account(cfg_rows)
+        default_loop_state = True if not has_saved_accounts else bool(cfg.get("loop_accounts", True))
+        st.session_state["sm_hesap_dongu"] = default_loop_state
 
     if force or "sm_select_all_accounts" not in st.session_state:
         st.session_state["sm_select_all_accounts"] = False
@@ -6215,31 +8817,67 @@ def _list_entries(dir_path: str):
     out =[(n, os.path.join(dir_path, n), os.path.isdir(os.path.join(dir_path, n))) for n in os.listdir(dir_path)]
     out.sort(key=lambda x: (not x[2], x[0].lower())); return out
 
-def _list_media_files_clean(dir_path: str):
-    if not dir_path or not os.path.isdir(dir_path): return []
-    out = []
-    medyalar = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.jpg', '.jpeg', '.png', '.bmp', '.webp')
+_VIDEO_PREVIEW_EXTENSIONS = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v')
+_IMAGE_PREVIEW_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+_MEDIA_PREVIEW_EXTENSIONS = _VIDEO_PREVIEW_EXTENSIONS + _IMAGE_PREVIEW_EXTENSIONS
+
+def _preview_extensions_for_kind(media_kind: str | None = None):
+    kind = str(media_kind or "").strip().lower()
+    if kind == "video":
+        return _VIDEO_PREVIEW_EXTENSIONS
+    if kind in ("gorsel", "image"):
+        return _IMAGE_PREVIEW_EXTENSIONS
+    return _MEDIA_PREVIEW_EXTENSIONS
+
+def _list_media_preview_entries(dir_path: str, media_kind: str | None = None):
+    if not dir_path or not os.path.isdir(dir_path):
+        return []
+
+    medya_uzantilari = _preview_extensions_for_kind(media_kind)
+    entries = []
+
     for root, _, files in os.walk(dir_path):
-        for f in files:
-            if f.lower().endswith(medyalar):
-                tam_yol = os.path.join(root, f)
-                rel_yol = os.path.relpath(tam_yol, dir_path)
-                parcalar = rel_yol.replace(os.sep, "/").split("/")
-                isim = parcalar[0] if len(parcalar) > 1 else os.path.splitext(f)[0]
-                if len(isim) > 40: isim = isim[:37] + "..."
-                out.append((isim, tam_yol, False, root != dir_path))
-    out.sort(key=lambda x: natural_sort_key(x[0]))
-    
-    ham = [e[0] for e in out]
-    etiketler = []
-    sayici = {}
-    for item in out:
-        e = item[0]
-        if ham.count(e) > 1:
-            sayici[e] = sayici.get(e, 0) + 1
-            e = f"{e} ({sayici[e]})"
-        etiketler.append((e, item[1], item[2]))
-    return etiketler
+        for file_name in files:
+            if not file_name.lower().endswith(medya_uzantilari):
+                continue
+
+            tam_yol = os.path.join(root, file_name)
+            rel_yol = os.path.relpath(tam_yol, dir_path)
+            rel_yol_ui = rel_yol.replace(os.sep, "/")
+            parcalar = rel_yol_ui.split("/")
+            etiket = parcalar[0] if len(parcalar) > 1 else os.path.splitext(file_name)[0]
+            if len(etiket) > 40:
+                etiket = etiket[:37] + "..."
+
+            entries.append({
+                "label_base": etiket,
+                "label": etiket,
+                "path": tam_yol,
+                "rel_path": rel_yol,
+                "nested": root != dir_path,
+            })
+
+    entries.sort(key=lambda item: natural_sort_key(item["rel_path"].replace(os.sep, "/")))
+
+    toplamlar = {}
+    for item in entries:
+        base_label = item["label_base"]
+        toplamlar[base_label] = toplamlar.get(base_label, 0) + 1
+
+    sayaclar = {}
+    for item in entries:
+        base_label = item["label_base"]
+        if toplamlar.get(base_label, 0) > 1:
+            sayaclar[base_label] = sayaclar.get(base_label, 0) + 1
+            item["label"] = f"{base_label} ({sayaclar[base_label]})"
+
+    return entries
+
+def _list_media_files_clean(dir_path: str, media_kind: str | None = None):
+    return [
+        (item["label"], item["path"], False)
+        for item in _list_media_preview_entries(dir_path, media_kind)
+    ]
 
 def _delete_path(target_path: str):
     if not _is_safe_path(target_path): return False
@@ -6256,13 +8894,265 @@ def _delete_path(target_path: str):
         return True
     except: return False
 
-def reset_txt_file(txt_path: str):
+def reset_txt_file(txt_path: str, default_text: str = ""):
     if not _is_safe_path(txt_path): return False
     try:
         os.makedirs(os.path.dirname(txt_path), exist_ok=True)
-        with open(txt_path, "w", encoding="utf-8") as f: f.write("")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("" if default_text is None else str(default_text))
         return True
     except: return False
+
+
+def _reset_json_file(json_path: str, payload) -> bool:
+    if not _is_safe_path(json_path):
+        return False
+    try:
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def _remove_file_if_exists_safe(file_path: str) -> bool:
+    if not file_path or not _is_safe_path(file_path):
+        return False
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return True
+    except Exception:
+        return False
+
+
+def _count_real_prompt_links(path: str | None = None) -> int:
+    links_file = (path or st.session_state.settings.get("links_file", "") or "").strip()
+    if not links_file or not os.path.exists(links_file):
+        return 0
+    try:
+        with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+            return len([ln for ln in f.read().splitlines() if ln.strip()])
+    except Exception:
+        return 0
+
+
+def _safe_count_from_function(function_name: str) -> int:
+    fn = globals().get(function_name)
+    if not callable(fn):
+        return 0
+    try:
+        return max(0, int(fn() or 0))
+    except Exception:
+        return 0
+
+
+def _has_real_video_input_source() -> bool:
+    return (
+        _count_real_prompt_links() > 0
+        or _safe_count_from_function("_count_download_videos") > 0
+        or _safe_count_from_function("_count_added_videos") > 0
+    )
+
+
+def _empty_source_placeholder_active() -> bool:
+    try:
+        return os.path.exists(EMPTY_SOURCE_PLACEHOLDER_FILE) and not _has_real_video_input_source()
+    except Exception:
+        return False
+
+
+def _clear_empty_source_placeholder():
+    try:
+        if os.path.exists(EMPTY_SOURCE_PLACEHOLDER_FILE):
+            os.remove(EMPTY_SOURCE_PLACEHOLDER_FILE)
+    except Exception:
+        pass
+
+
+def _is_empty_source_placeholder_item(item: dict | None) -> bool:
+    return bool((item or {}).get("placeholder"))
+
+
+def _write_json_payload_safe(path: str, payload: dict) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        try:
+            log(f"[WARN] Kontrol JSON yazilamadi: {path} -> {e}")
+        except Exception:
+            pass
+        return False
+
+
+def _empty_video_montaj_preset_payload() -> dict:
+    return {
+        "selection_text": "T",
+        "format_choice": "D",
+        "muzik_seviyesi": "15",
+        "ses_efekti_seviyesi": "15",
+        "orijinal_ses_seviyesi": "100",
+        "video_ses_seviyesi": "100",
+        "baslik": "",
+        "source_mode": "Mevcut Videolar",
+        "orijinal_ses_kaynak_sirasi": "",
+        "placeholder": True,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _empty_toplu_video_preset_payload() -> dict:
+    payload = _empty_video_montaj_preset_payload()
+    payload["source_selection_text"] = "T"
+    payload["production_limit"] = 0
+    return payload
+
+
+def _seed_empty_source_placeholder_state():
+    settings_obj = st.session_state.get("settings", {}) or {}
+    now_text = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    _write_json_payload_safe(
+        EMPTY_SOURCE_PLACEHOLDER_FILE,
+        {
+            "kind": "empty_source_placeholder",
+            "source_mode": PROMPT_SOURCE_LINK,
+            "created_at": now_text,
+        },
+    )
+
+    for text_path in (
+        settings_obj.get("links_file", ""),
+        settings_obj.get("video_prompt_links_file", ""),
+    ):
+        try:
+            if text_path:
+                os.makedirs(os.path.dirname(text_path), exist_ok=True)
+                with open(text_path, "w", encoding="utf-8") as f:
+                    f.write("\n")
+        except Exception:
+            pass
+
+    _write_prompt_source_mode(PROMPT_SOURCE_LINK)
+    st.session_state["link_canvas_source"] = "manual"
+    _write_json_payload_safe(
+        os.path.join(CONTROL_DIR, "prompt_input_selection.json"),
+        {"mode": "all", "selected_items": {"links": [], "downloaded_videos": [], "added_videos": []}, "saved_at": now_text},
+    )
+    _write_json_payload_safe(
+        os.path.join(CONTROL_DIR, "video_prompt_selection.json"),
+        {"mode": "all", "selected_prompt_folders": [], "saved_at": now_text},
+    )
+    _write_json_payload_safe(VIDEO_KLONLA_CONTROL_PATH, _video_klonla_default_state())
+    _write_json_payload_safe(os.path.join(CONTROL_DIR, "video_montaj_preset.json"), _empty_video_montaj_preset_payload())
+    _write_json_payload_safe(os.path.join(CONTROL_DIR, "toplu_video_preset.json"), _empty_toplu_video_preset_payload())
+
+
+def _reset_dialog_defaults_after_full_cleanup():
+    _reset_complex_dialog_lazy_state()
+
+    st.session_state["sm_video_kaynak_secim"] = "Link"
+    st.session_state["toplu_video_source_mode"] = "Mevcut Videolar"
+    st.session_state["toplu_video_source_selection_text"] = "T"
+    st.session_state["toplu_video_selection_text"] = "T"
+    st.session_state["toplu_video_format"] = "D"
+    st.session_state["toplu_video_production_limit"] = 0
+    st.session_state["tv_muzik_seviyesi"] = "15"
+    st.session_state["tv_ses_efekti_seviyesi"] = "15"
+    st.session_state["tv_orijinal_ses_seviyesi"] = "100"
+    st.session_state["tv_video_ses_seviyesi"] = "100"
+    st.session_state["tv_orijinal_ses_kaynak_sirasi"] = ""
+    st.session_state["tv_baslik"] = ""
+    st.session_state["tv_custom_override"] = ""
+
+    st.session_state["video_montaj_source_mode"] = "Mevcut Videolar"
+    st.session_state["video_montaj_selection_text"] = "T"
+    st.session_state["video_montaj_format"] = "D"
+    st.session_state["vm_custom_override"] = ""
+    st.session_state["vm_muzik_seviyesi"] = "15"
+    st.session_state["vm_ses_efekti_seviyesi"] = "15"
+    st.session_state["vm_orijinal_ses_seviyesi"] = "100"
+    st.session_state["vm_video_ses_seviyesi"] = "100"
+    st.session_state["vm_orijinal_ses_kaynak_sirasi"] = ""
+    st.session_state["vm_baslik"] = ""
+
+    st.session_state["vk_mode_widget"] = "Video"
+    st.session_state["vk_model_widget"] = "Motion Control"
+
+    _sm_schedule_form_ui_reset(
+        ayar_modu="Genel",
+        video_kaynak_secim="Link",
+        kaynak_radio="Link",
+        baslik="",
+        aciklama="",
+        platform_secimler={"youtube": False, "tiktok": False, "instagram": False},
+        publish_mode="schedule",
+        gun="",
+        saat="",
+        clear_item_keys=True,
+        drop_loaded=True,
+    )
+
+
+def _repair_control_state_files():
+    prompt_input_default = {
+        "mode": "all",
+        "selected_items": {"links": [], "downloaded_videos": [], "added_videos": []},
+    }
+
+    prompt_source_path = PROMPT_SOURCE_MODE_FILE
+    try:
+        prompt_source_raw = ""
+        if prompt_source_path and os.path.exists(prompt_source_path):
+            with open(prompt_source_path, "r", encoding="utf-8", errors="ignore") as f:
+                prompt_source_raw = f.read().strip()
+        if prompt_source_path and os.path.exists(prompt_source_path) and not prompt_source_raw:
+            reset_txt_file(prompt_source_path, "auto")
+    except Exception:
+        pass
+
+    for preset_path in (
+        os.path.join(CONTROL_DIR, "video_montaj_preset.json"),
+        os.path.join(CONTROL_DIR, "toplu_video_preset.json"),
+    ):
+        try:
+            if preset_path and os.path.exists(preset_path) and os.path.getsize(preset_path) == 0:
+                _remove_file_if_exists_safe(preset_path)
+        except Exception:
+            pass
+
+    prompt_input_path = os.path.join(CONTROL_DIR, "prompt_input_selection.json")
+    try:
+        prompt_input_raw = ""
+        if os.path.exists(prompt_input_path):
+            with open(prompt_input_path, "r", encoding="utf-8", errors="ignore") as f:
+                prompt_input_raw = f.read().strip()
+        if os.path.exists(prompt_input_path) and not prompt_input_raw:
+            _reset_json_file(prompt_input_path, prompt_input_default)
+    except Exception:
+        pass
+
+    try:
+        vk_raw = ""
+        if os.path.exists(VIDEO_KLONLA_CONTROL_PATH):
+            with open(VIDEO_KLONLA_CONTROL_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                vk_raw = f.read().strip()
+        if os.path.exists(VIDEO_KLONLA_CONTROL_PATH) and not vk_raw:
+            _reset_json_file(VIDEO_KLONLA_CONTROL_PATH, _video_klonla_default_state())
+    except Exception:
+        pass
+
+    try:
+        if _empty_source_placeholder_active() or not _has_real_video_input_source():
+            _seed_empty_source_placeholder_state()
+        else:
+            _clear_empty_source_placeholder()
+    except Exception:
+        pass
 
 
 def clean_all_targets():
@@ -6290,6 +9180,8 @@ def clean_all_targets():
         s.get("video_montaj_output_dir"),
         s.get("toplu_video_output_dir"),
         s.get("video_output_dir"),
+        s.get("klon_video_dir"),
+        s.get("video_klonla_dir"),
         s.get("gorsel_analiz_dir"),
         s.get("klon_gorsel_dir"),
         s.get("gorsel_olustur_dir"),
@@ -6303,24 +9195,39 @@ def clean_all_targets():
     # Spesifik Dosyalar ve Klasörlerin temizliği (Görsellerin bırakıp içi boş olan prompt klasör kalıntılarını silmek için)
     _safe_delete_children(r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Prompt Oluşturma\temp_upload")
 
-    # TXT / preset dosyaları
+    # TXT / state dosyaları
     txt_targets = [
-        s.get("links_file"),
-        s.get("video_prompt_links_file"),
-        s.get("gorsel_duzelt_txt"),
-        s.get("prompt_duzeltme_txt"),
-        PROMPT_SOURCE_MODE_FILE,
-        os.path.join(CONTROL_DIR, "video_montaj_preset.json"),
-        os.path.join(CONTROL_DIR, "toplu_video_preset.json"),
-        os.path.join(CONTROL_DIR, "prompt_input_selection.json"),
+        (s.get("links_file"), "\n"),
+        (s.get("video_prompt_links_file"), "\n"),
+        (s.get("gorsel_duzelt_txt"), ""),
+        (s.get("prompt_duzeltme_txt"), ""),
+        (PROMPT_SOURCE_MODE_FILE, "auto"),
     ]
+    # istem.txt özellikle hariç tutulur; Dosya Yöneticisi'nden sadece düzenlenebilir.
 
-    for path in txt_targets:
+    for path, default_text in txt_targets:
         try:
-            if path and os.path.exists(path):
-                reset_txt_file(path)
+            if path:
+                reset_txt_file(path, default_text)
         except Exception as e:
             log(f"[WARN] TXT sıfırlanamadı: {path} -> {e}")
+
+    for preset_path in (
+        os.path.join(CONTROL_DIR, "video_montaj_preset.json"),
+        os.path.join(CONTROL_DIR, "toplu_video_preset.json"),
+    ):
+        try:
+            _remove_file_if_exists_safe(preset_path)
+        except Exception as e:
+            log(f"[WARN] Preset dosyası temizlenemedi: {preset_path} -> {e}")
+
+    try:
+        _reset_json_file(
+            os.path.join(CONTROL_DIR, "prompt_input_selection.json"),
+            {"mode": "all", "selected_items": {"links": [], "downloaded_videos": [], "added_videos": []}},
+        )
+    except Exception as e:
+        log(f"[WARN] Prompt seçim durumu sıfırlanamadı: {e}")
 
     # Durum özetini temizle
     try:
@@ -6334,6 +9241,20 @@ def clean_all_targets():
     except Exception:
         pass
 
+    try:
+        cleanup_social_media_state_files(clear_saved_plan=True, preserve_accounts=True)
+    except Exception:
+        pass
+
+    try:
+        _clear_video_settings_overrides(reset_widgets=True)
+    except Exception:
+        pass
+    try:
+        _seed_empty_source_placeholder_state()
+    except Exception as e:
+        log(f"[WARN] Bos kaynak placeholder durumu hazirlanamadi: {e}")
+
     # Oturum verilerini sifirla (Görsel Oluşturma vb.)
     keys_to_del = [k for k in st.session_state.keys() if k.startswith(("go_gp", "go_gs", "go_vp", "go_vs", "go_vid"))]
     for k in keys_to_del:
@@ -6341,7 +9262,12 @@ def clean_all_targets():
     st.session_state.go_gorsel_count = 1
     st.session_state.go_vid_count = 1
 
+    _reset_dialog_defaults_after_full_cleanup()
+
     log("[OK] Toplu temizlik tamamlandı.")
+
+
+_repair_control_state_files()
 
 def save_youtube_link_config(payload: dict) -> str:
     """YouTube link toplama için geçici JSON yapılandırma dosyası oluşturur."""
@@ -6358,14 +9284,10 @@ def _video_montaj_sort_key(value: str):
 
 
 def _read_links_count() -> int:
-    links_file = st.session_state.settings.get("links_file", "")
-    if not links_file or not os.path.exists(links_file):
-        return 0
-    try:
-        with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
-            return len([ln for ln in f.read().splitlines() if ln.strip()])
-    except Exception:
-        return 0
+    count = _count_real_prompt_links(st.session_state.settings.get("links_file", ""))
+    if count == 0 and _empty_source_placeholder_active():
+        return 1
+    return count
 
 
 def _list_video_montaj_assets():
@@ -6419,14 +9341,14 @@ def _list_video_montaj_assets():
             "source_kind": "download",
         }
 
-    klon_items = []
+    klon_actual_by_no = {}
     if klon_root and os.path.isdir(klon_root):
         for item in os.listdir(klon_root):
             item_path = os.path.join(klon_root, item)
             if not os.path.isdir(item_path):
                 continue
 
-            m = re.match(r'^Klon\s+Video\s+(\d+)$', item, re.IGNORECASE)
+            m = re.match(r'^(?:Klon\s+)?Video\s+(\d+)$', item, re.IGNORECASE)
             if not m:
                 continue
 
@@ -6438,14 +9360,12 @@ def _list_video_montaj_assets():
 
             media_files.sort(key=lambda p: _video_montaj_sort_key(os.path.basename(p)))
             if media_files:
-                klon_items.append({
+                klon_actual_by_no[clone_no] = {
                     "folder_name": item,
                     "path": media_files[0],
                     "exists": True,
                     "clone_no": clone_no,
-                })
-
-    klon_items.sort(key=lambda x: x["clone_no"])
+                }
 
     all_videos = []
     display_no = 1
@@ -6476,15 +9396,17 @@ def _list_video_montaj_assets():
                 "source_kind": "download",
             })
         else:
+            is_placeholder_item = _empty_source_placeholder_active() and link_count == 1 and video_no == 1
             all_videos.append({
                 "token": str(display_no),
                 "script_token": str(display_no - 1),
-                "label": f"[{display_no}] Link Video {video_no}",
+                "label": "Kaynak Bekleniyor" if is_placeholder_item else f"[{display_no}] Link Video {video_no}",
                 "path": "",
                 "exists": False,
                 "expected": True,
                 "video_no": video_no,
                 "source_kind": "link",
+                "placeholder": is_placeholder_item,
             })
         display_no += 1
 
@@ -6509,18 +9431,35 @@ def _list_video_montaj_assets():
         })
         display_no += 1
 
-    for entry in klon_items:
-        all_videos.append({
-            "token": str(display_no),
-            "script_token": str(display_no - 1),
-            "label": f"[{display_no}] Klon Video {entry['clone_no']}",
-            "path": entry["path"],
-            "exists": True,
-            "expected": False,
-            "clone_no": entry["clone_no"],
-            "source_kind": "clone",
-        })
-        display_no += 1
+    klon_videos = []
+    planned_klon_count = _planned_video_klonla_output_count()
+
+    if planned_klon_count > 0:
+        for clone_no in range(1, planned_klon_count + 1):
+            actual_entry = klon_actual_by_no.get(clone_no)
+            klon_videos.append({
+                "token": str(clone_no),
+                "script_token": str(clone_no - 1),
+                "label": f"[{clone_no}] Klon Video {clone_no}",
+                "path": (actual_entry or {}).get("path", ""),
+                "exists": bool(actual_entry and actual_entry.get("path")),
+                "expected": not bool(actual_entry and actual_entry.get("path")),
+                "clone_no": clone_no,
+                "source_kind": "clone",
+            })
+    else:
+        for display_idx, clone_no in enumerate(sorted(klon_actual_by_no.keys()), start=1):
+            actual_entry = klon_actual_by_no.get(clone_no) or {}
+            klon_videos.append({
+                "token": str(display_idx),
+                "script_token": str(display_idx - 1),
+                "label": f"[{display_idx}] Klon Video {clone_no}",
+                "path": actual_entry.get("path", ""),
+                "exists": bool(actual_entry.get("path")),
+                "expected": False,
+                "clone_no": clone_no,
+                "source_kind": "clone",
+            })
 
     motion_videos = []
     for idx, entry in enumerate(motion_prompt_entries, start=1):
@@ -6579,6 +9518,7 @@ def _list_video_montaj_assets():
 
     return {
         "videos": all_videos,
+        "clone_videos": klon_videos,
         "gorsel_olustur_videos": motion_videos,
         "images": all_images,
         "gorsel_olustur_images": gorsel_olustur_images,
@@ -6605,7 +9545,7 @@ def _remap_numeric_selection_text(text_value: str, token_remap: dict) -> str:
     if raw.upper() == "T":
         return raw
 
-    parts = [p.strip() for p in re.split(r'[\s,;]+', raw) if p.strip()]
+    parts = [p.strip() for p in re.split(r'[\s,.;]+', raw) if p.strip()]
     if not parts:
         return raw
 
@@ -6682,7 +9622,7 @@ def _prepare_mevcut_video_runner_dirs(video_items: list, temp_prefix: str = "vid
 def _video_montaj_secim_metni_uret(secili_tokenler, muzik=False, cerceve=False, logo=False, video_overlay=False, ses_efekti=False, orijinal_ses=False, custom_text=''):
     custom_text = (custom_text or '').strip()
     if custom_text:
-        parts = [p.strip() for p in re.split(r'[\s,]+', custom_text) if p.strip()]
+        parts = [p.strip() for p in re.split(r'[\s,.;]+', custom_text) if p.strip()]
         norm = []
         for p in parts:
             up = p.upper()
@@ -6717,7 +9657,7 @@ def _video_montaj_ui_to_script_selection(text: str) -> str:
     if not raw:
         return "T"
 
-    parts = [p.strip() for p in re.split(r'[\s,]+', raw) if p.strip()]
+    parts = [p.strip() for p in re.split(r'[\s,.;]+', raw) if p.strip()]
     if not parts:
         return "T"
 
@@ -7602,7 +10542,7 @@ if "toplu_video_preset_oku" not in globals():
         return {}
 
 if "toplu_video_preset_kaydet" not in globals():
-    def toplu_video_preset_kaydet(selection_text: str, format_choice: str, source_selection_text: str = "T", muzik_seviyesi: str = "", ses_efekti_seviyesi: str = "", baslik: str = "", source_mode: str = "Mevcut Videolar", orijinal_ses_seviyesi: str = "", video_ses_seviyesi: str = "", orijinal_ses_kaynak_sirasi: str = "") -> bool:
+    def toplu_video_preset_kaydet(selection_text: str, format_choice: str, source_selection_text: str = "T", muzik_seviyesi: str = "", ses_efekti_seviyesi: str = "", baslik: str = "", source_mode: str = "Mevcut Videolar", orijinal_ses_seviyesi: str = "", video_ses_seviyesi: str = "", orijinal_ses_kaynak_sirasi: str = "", production_limit=0) -> bool:
         try:
             os.makedirs(os.path.dirname(TOPLU_VIDEO_PRESET_FILE), exist_ok=True)
             muzik_seviyesi = _vm_normalize_percent_text(muzik_seviyesi, 15)
@@ -7611,11 +10551,13 @@ if "toplu_video_preset_kaydet" not in globals():
             video_ses_seviyesi = _vm_normalize_percent_text(video_ses_seviyesi, 100)
             baslik = (baslik or "").strip()
             orijinal_ses_kaynak_sirasi = _orijinal_ses_kaynak_sirasi_normalize(orijinal_ses_kaynak_sirasi)
+            production_limit = _toplu_video_uretim_limiti_normalize(production_limit)
             payload = {
                 "selection_text": (selection_text or "T").strip(),
                 "format_choice": (format_choice or "D").strip().upper(),
                 "source_selection_text": (source_selection_text or "T").strip().upper() or "T",
                 "source_mode": _normalize_toplu_video_source_mode(source_mode),
+                "production_limit": production_limit,
                 "muzik_seviyesi": muzik_seviyesi,
                 "ses_efekti_seviyesi": ses_efekti_seviyesi,
                 "orijinal_ses_seviyesi": orijinal_ses_seviyesi,
@@ -7626,6 +10568,8 @@ if "toplu_video_preset_kaydet" not in globals():
             }
             with open(TOPLU_VIDEO_PRESET_FILE, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
+            with open(os.path.join(CONTROL_DIR, "toplu_video_runtime_limit.txt"), "w", encoding="utf-8") as f:
+                f.write(str(production_limit or 0))
 
             materyal_paths = _tv_bootstrap_get_materyal_paths(st.session_state.settings)
             _vm_write_text_file(materyal_paths["muzik_ses"], muzik_seviyesi)
@@ -7644,6 +10588,8 @@ if "toplu_video_preset_sil" not in globals():
         try:
             if os.path.exists(TOPLU_VIDEO_PRESET_FILE):
                 os.remove(TOPLU_VIDEO_PRESET_FILE)
+            with open(os.path.join(CONTROL_DIR, "toplu_video_runtime_limit.txt"), "w", encoding="utf-8") as f:
+                f.write("0")
             return True
         except Exception:
             return False
@@ -7719,6 +10665,7 @@ def toplu_video_dialog():
             st.session_state.toplu_video_format = preset.get("format_choice", st.session_state.get("toplu_video_format", "D"))
             st.session_state.toplu_video_source_selection_text = preset.get("source_selection_text", st.session_state.get("toplu_video_source_selection_text", "T"))
             st.session_state["toplu_video_source_mode"] = _normalize_toplu_video_source_mode(preset.get("source_mode", st.session_state.get("toplu_video_source_mode", "Mevcut Videolar")))
+            st.session_state["toplu_video_production_limit"] = _toplu_video_uretim_limiti_normalize(preset.get("production_limit", preset.get("uretim_limiti", 0)))
             st.session_state["tv_muzik_seviyesi"] = preset.get("muzik_seviyesi", _tv_bootstrap_read_text_file(materyal_paths["muzik_ses"], "15"))
             st.session_state["tv_ses_efekti_seviyesi"] = preset.get("ses_efekti_seviyesi", _tv_bootstrap_read_text_file(materyal_paths["ses_efekti_ses"], "15"))
             st.session_state["tv_orijinal_ses_seviyesi"] = preset.get("orijinal_ses_seviyesi", "100")
@@ -7727,6 +10674,7 @@ def toplu_video_dialog():
             st.session_state["tv_baslik"] = preset.get("baslik", _tv_bootstrap_read_text_file(materyal_paths["baslik"], ""))
         else:
             st.session_state.setdefault("toplu_video_source_mode", "Mevcut Videolar")
+            st.session_state.setdefault("toplu_video_production_limit", 0)
             st.session_state.setdefault("tv_muzik_seviyesi", _tv_bootstrap_read_text_file(materyal_paths["muzik_ses"], "15"))
             st.session_state.setdefault("tv_ses_efekti_seviyesi", _tv_bootstrap_read_text_file(materyal_paths["ses_efekti_ses"], "15"))
             st.session_state.setdefault("tv_orijinal_ses_seviyesi", "100")
@@ -7748,7 +10696,7 @@ def toplu_video_dialog():
         horizontal=True,
     )
 
-    tv_source_options = ["Mevcut Videolar", "Eklenen Video", "Görsel Oluştur"]
+    tv_source_options = ["Mevcut Videolar", "Eklenen Video", "Görsel Oluştur", "Klon Video"]
     tv_current_source_mode = _normalize_toplu_video_source_mode(st.session_state.get("toplu_video_source_mode", "Mevcut Videolar"))
     kaynak_modu = st.radio(
         "📂 Kaynak Türü",
@@ -7767,10 +10715,14 @@ def toplu_video_dialog():
         video_items = assets.get("gorsel_olustur_videos", [])
         kaynak_baslik = "**🖼️ Görsel Oluştur kaynakları:**"
         kaynak_bilgi = "Bu modda Görsel Oluştur ekranında kaydettiğiniz hareketlendirme promptlarından oluşan videolar kaynak olarak kullanılır."
+    elif st.session_state.toplu_video_source_mode == "Klon Video":
+        video_items = assets.get("clone_videos", [])
+        kaynak_baslik = "**🎬 Klon Video kaynakları:**"
+        kaynak_bilgi = "Bu modda Video Klonla ekranında kaydettiğiniz görevlerden üretilecek klon videolar kaynak olarak kullanılır."
     else:
         video_items = assets.get("videos", [])
-        kaynak_baslik = "**🎬 Kaynak videolar (Önce Normal / İndirilen Videolar, Sonra Klon Videolar):**"
-        kaynak_bilgi = "Bu modda mevcut normal, indirilen ve klon videolar kullanılır."
+        kaynak_baslik = "**🎬 Kaynak videolar:**"
+        kaynak_bilgi = "Bu modda mevcut normal ve indirilen videolar kullanılır."
 
     has_existing_source_video = any(item.get("exists") for item in video_items)
 
@@ -7779,11 +10731,18 @@ def toplu_video_dialog():
     st.caption(kaynak_bilgi)
     if st.session_state.toplu_video_source_mode == "Görsel Oluştur" and video_items and not has_existing_source_video:
         st.info("Kayitli hareketlendirme promptlari kaynak listesine eklendi. Tumunu Calistir akisinda once bu videolar uretilir, sonra Toplu Video Montaj bu ciktilari kullanir.")
+    elif st.session_state.toplu_video_source_mode == "Klon Video" and video_items and not has_existing_source_video:
+        st.info("Kayitli Klon Video gorevleri kaynak listesine eklendi. Tumunu Calistir akisinda once Klon Video uretilir, sonra Toplu Video Montaj bu ciktilari kullanir.")
+    elif st.session_state.toplu_video_source_mode == "Eklenen Video" and video_items and not has_existing_source_video:
+        st.info("Kayitli bolum planlari kaynak listesine eklendi. Tumunu Calistir akisinda once Video Indir tamamlanir, sonra bu planlar Eklenen Video olarak olusturulur.")
     tv_pick_prefix = f"tv_pick_{st.session_state.toplu_video_source_mode}"
     onceki_kaynak_text = (st.session_state.get("toplu_video_source_selection_text", "T") or "T").strip().upper() or "T"
     onceki_kaynak_tokenleri = set(_toplu_video_source_secim_to_tokens(onceki_kaynak_text, video_items))
+    placeholder_items = [item for item in video_items if _is_empty_source_placeholder_item(item)]
     if video_items:
         for item in video_items:
+            if _is_empty_source_placeholder_item(item):
+                continue
             st.checkbox(
                 item["label"],
                 key=f"{tv_pick_prefix}_{item['token']}",
@@ -7791,6 +10750,8 @@ def toplu_video_dialog():
             )
     else:
         st.info("Toplu montaj için uygun video bulunamadı.")
+    if placeholder_items:
+        st.caption("Kaynak eklendiğinde ilk slot otomatik dolacak.")
 
     secili_video_tokenleri = [item["token"] for item in video_items if st.session_state.get(f"{tv_pick_prefix}_{item['token']}", False)]
     tum_video_tokenleri = [item["token"] for item in video_items]
@@ -7904,10 +10865,29 @@ def toplu_video_dialog():
         secili_kaynak_girdisi_sayisi,
         secim_metni,
     )
+    uretim_limiti = 0
     if uretilecek_video_sayisi is None:
         st.warning("Toplu Video scripti 2 ile 20 arası kaynak video sayısını destekliyor. Bu yüzden üretilecek video sayısı burada hesaplanamadı.")
     else:
         st.caption(f"📊 Bu seçimle üretilecek toplam video sayısı: {uretilecek_video_sayisi}")
+        if uretilecek_video_sayisi > 0:
+            varsayilan_limit = _toplu_video_uretim_limiti_normalize(
+                st.session_state.get("toplu_video_production_limit", 0),
+                uretilecek_video_sayisi,
+            ) or int(uretilecek_video_sayisi)
+            st.session_state["toplu_video_production_limit"] = varsayilan_limit
+            uretim_limiti = int(st.number_input(
+                "🎯 Üretilecek Video Sayısı",
+                min_value=1,
+                max_value=int(uretilecek_video_sayisi),
+                value=int(varsayilan_limit),
+                step=1,
+                key="toplu_video_production_limit",
+                help="Toplu Video Montaj bu sayıya ulaşınca işlemi tamamlar. Sosyal Medya Paylaşım bölümü de kaydedilen bu sayıyı baz alır.",
+            ))
+            st.caption(f"📌 Üretim limiti: {uretim_limiti}/{uretilecek_video_sayisi} video")
+        else:
+            st.caption("Üretilecek video sayısı 0 olduğu için limit alanı pasif.")
 
     st.session_state.toplu_video_source_selection_text = kaynak_secim_metni
     st.session_state.toplu_video_selection_text = secim_metni
@@ -7929,6 +10909,7 @@ def toplu_video_dialog():
                 st.session_state.get("tv_orijinal_ses_seviyesi", "100"),
                 st.session_state.get("tv_video_ses_seviyesi", "100"),
                 st.session_state.get("tv_orijinal_ses_kaynak_sirasi", ""),
+                uretim_limiti,
             ):
                 st.session_state["tv_saved"] = True
             st.session_state.ek_dialog_open = "toplu_video"
@@ -7939,6 +10920,7 @@ def toplu_video_dialog():
         st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
         if st.button("🗑️ Kayıt Temizle", key="tv_clear_saved_btn", use_container_width=True):
             globals().get("toplu_video_preset_sil", lambda *args, **kwargs: False)()
+            st.session_state["toplu_video_production_limit"] = 0
             st.session_state.pop("tv_saved", None)
             st.session_state.ek_dialog_open = "toplu_video"
             st.rerun()
@@ -7962,6 +10944,7 @@ def toplu_video_dialog():
         st.session_state.toplu_video_format = "D" if fmt_label.startswith("Dikey") else "Y"
         st.session_state.toplu_video_selection_text = secim_metni
         st.session_state.toplu_video_source_selection_text = kaynak_secim_metni
+        st.session_state.toplu_video_production_limit = uretim_limiti
         # Tekli kontrol butonlarının görünmesi için tekli işlem state'i başlatma anında işaretlenmeli.
         st.session_state.single_paused = False
         st.session_state.single_finish_requested = False
@@ -8017,8 +11000,8 @@ def video_montaj_dialog():
             st.session_state.setdefault("video_montaj_source_mode", "Mevcut Videolar")
         st.session_state["_vm_preset_loaded"] = True
 
-    # Kaynak modu seçimi: Mevcut Videolar, Eklenen Video veya Görsel Oluştur
-    vm_source_options = ["Mevcut Videolar", "Eklenen Video", "Görsel Oluştur"]
+    # Kaynak modu seçimi: Mevcut Videolar, Eklenen Video, Görsel Oluştur veya Klon Video
+    vm_source_options = ["Mevcut Videolar", "Eklenen Video", "Görsel Oluştur", "Klon Video"]
     vm_current_source_mode = _normalize_toplu_video_source_mode(st.session_state.get("video_montaj_source_mode", "Mevcut Videolar"))
     vm_kaynak_modu = st.radio(
         "📂 Kaynak Türü",
@@ -8038,6 +11021,11 @@ def video_montaj_dialog():
         assets = _list_video_montaj_assets()
         video_items = assets.get("gorsel_olustur_videos", [])
         image_items = assets.get("gorsel_olustur_images", [])
+        has_real_video_items = any(item.get("exists", False) for item in video_items)
+    elif st.session_state.video_montaj_source_mode == "Klon Video":
+        assets = _list_video_montaj_assets()
+        video_items = assets.get("clone_videos", [])
+        image_items = assets["images"]
         has_real_video_items = any(item.get("exists", False) for item in video_items)
     else:
         assets = _list_video_montaj_assets()
@@ -8064,17 +11052,29 @@ def video_montaj_dialog():
     elif st.session_state.video_montaj_source_mode == "Görsel Oluştur":
         st.markdown("**🖼️ Görsel Oluştur kaynakları:**")
         st.caption("Bu modda Görsel Oluştur ekranında kaydettiğiniz hareketlendirme promptları ve oluşturulan görseller kaynak olarak kullanılır.")
+    elif st.session_state.video_montaj_source_mode == "Klon Video":
+        st.markdown("**🎬 Klon Video kaynakları:**")
+        st.caption("Bu modda Video Klonla ekranında kaydettiğiniz görevlerden üretilecek klon videolar kaynak olarak kullanılır.")
     else:
-        st.markdown("**🎬 Mevcut videolar (Önce Normal / İndirilen Videolar, Sonra Klon Videolar):**")
-        st.caption("Bu modda mevcut, indirilen ve klon videolar Video Montaj için kaynak olarak kullanılır.")
+        st.markdown("**🎬 Mevcut videolar:**")
+        st.caption("Bu modda mevcut ve indirilen videolar Video Montaj için kaynak olarak kullanılır.")
     if st.session_state.video_montaj_source_mode == "Görsel Oluştur" and video_items and not has_real_video_items:
         st.info("Kayitli hareketlendirme promptlari kaynak listesine eklendi. Tumunu Calistir akisinda once bu videolar uretilir, sonra Video Montaj bu ciktilari kullanir.")
+    elif st.session_state.video_montaj_source_mode == "Klon Video" and video_items and not has_real_video_items:
+        st.info("Kayitli Klon Video gorevleri kaynak listesine eklendi. Tumunu Calistir akisinda once Klon Video uretilir, sonra Video Montaj bu ciktilari kullanir.")
+    elif st.session_state.video_montaj_source_mode == "Eklenen Video" and video_items and not has_real_video_items:
+        st.info("Kayitli bolum planlari kaynak listesine eklendi. Tumunu Calistir akisinda once Video Indir tamamlanir, sonra bu planlar Eklenen Video olarak olusturulur.")
     vm_pick_prefix = f"vm_pick_{st.session_state.video_montaj_source_mode}"
+    placeholder_items = [item for item in video_items if _is_empty_source_placeholder_item(item)]
     if video_items:
         for item in video_items:
+            if _is_empty_source_placeholder_item(item):
+                continue
             st.checkbox(item["label"], key=f"{vm_pick_prefix}_{item['token']}")
     else:
         st.info("Montaj için uygun video bulunamadı.")
+    if placeholder_items:
+        st.caption("Kaynak eklendiğinde ilk slot otomatik dolacak.")
 
     if st.session_state.video_montaj_source_mode != "Eklenen Video":
         if st.session_state.video_montaj_source_mode == "Görsel Oluştur":
@@ -8293,6 +11293,11 @@ def tv_asset_manager_dialog():
 
 @st.dialog("🗂️ Dosya Yöneticisi", width="large")
 def dosya_yoneticisi_dialog():
+    def _rerun_dosya_yoneticisi():
+        st.session_state.last_dialog_align = "right"
+        st.session_state.ek_dialog_open = "dosya_yoneticisi"
+        st.rerun()
+
     tab1, tab2, tab3 = st.tabs(["🔍 İncele & Seçerek Sil", "🧹 Toplu Temizlik", "📦 Ekle & Çıkar"])
     
     with tab1:
@@ -8303,12 +11308,14 @@ def dosya_yoneticisi_dialog():
             "🎬 Toplu Montaj Videoları": s.get("toplu_video_output_dir"),
             "🎞️ Montaj Videoları":      s.get("video_montaj_output_dir"),
             "🎬 Üretilen Videolar":      s.get("video_output_dir"),
+            "🎬 Klon Videolar":         s.get("klon_video_dir") or s.get("video_klonla_dir"),
             "📝 Promptlar":              s.get("prompt_dir"),
             "🖼️ Oluşturulan Görseller": s.get("gorsel_olustur_dir"),
             "🎨 Klon Görseller":        s.get("klon_gorsel_dir"),
             "🖼️ Görsel Analiz":         s.get("gorsel_analiz_dir"),
             "⬇️ İndirilen Videolar":    s.get("download_dir"),
-            "🎞️ Eklenen Videolar":     s.get("added_video_dir")
+            "🎞️ Eklenen Videolar":     s.get("added_video_dir"),
+            "🧾 Prompt İstem":          s.get("prompt_istem_txt") or DEFAULT_SETTINGS.get("prompt_istem_txt", ""),
         }
         
         secilen_kategori = st.selectbox("Kategori Seçin:", list(kategoriler.keys()), key="fileman_cat")
@@ -8318,8 +11325,142 @@ def dosya_yoneticisi_dialog():
             st.session_state["fileman_file_idx"] = 0
         hedef_klasor = kategoriler[secilen_kategori]
 
+        if secilen_kategori == "🧾 Prompt İstem":
+            txt_yolu = str(hedef_klasor or "").strip()
+            if txt_yolu:
+                st.markdown("---")
+                st.markdown("**📄 istem.txt**")
+                st.caption("Bu dosya yalnızca düzenlenir; silme ve toplu temizlik işlemlerine dahil edilmez.")
+
+                _rb1, _rb2, _rb3 = st.columns([0.22, 0.28, 0.5])
+                with _rb1:
+                    if st.button("🔄 Yenile", key="btn_prompt_istem_reload", use_container_width=True):
+                        st.session_state.pop("prompt_istem_edit", None)
+                        ver = st.session_state.get("prompt_istem_widget_ver", 0)
+                        st.session_state["prompt_istem_widget_ver"] = ver + 1
+                        st.session_state.pop("prompt_istem_bildirim", None)
+                        _rerun_dosya_yoneticisi()
+                with _rb2:
+                    _kopya_aktif = st.session_state.get("prompt_istem_kopya_goster", False)
+                    _kopya_label = "✖ Kopyalamayı Kapat" if _kopya_aktif else "📋 Kopyala"
+                    if st.button(_kopya_label, key="btn_prompt_istem_kopya", use_container_width=True):
+                        st.session_state["prompt_istem_kopya_goster"] = not _kopya_aktif
+                        _rerun_dosya_yoneticisi()
+
+                try:
+                    if os.path.exists(txt_yolu):
+                        with open(txt_yolu, "r", encoding="utf-8") as f:
+                            icerik = f.read()
+                    else:
+                        icerik = ""
+                    edit_key = "prompt_istem_edit"
+                    widget_ver = st.session_state.get("prompt_istem_widget_ver", 0)
+                    if edit_key not in st.session_state:
+                        st.session_state[edit_key] = icerik
+                    duzenlenen = st.text_area(
+                        "📄 istem.txt içeriği:",
+                        value=st.session_state[edit_key],
+                        height=280,
+                        key=f"prompt_istem_preview_area_v{widget_ver}"
+                    )
+                    st.session_state[edit_key] = duzenlenen
+
+                    if st.session_state.get("prompt_istem_kopya_goster", False):
+                        st.markdown("**📋 Kopyalamak için aşağıdaki metni kullanın:**")
+                        st.code(duzenlenen, language=None)
+                except Exception as e:
+                    st.error(f"Dosya okunamadı: {e}")
+                    duzenlenen = ""
+
+                ceviri_key = "prompt_istem_ceviri"
+                bildirim_key = "prompt_istem_bildirim"
+                c_save, c_reload2, c_tr = st.columns(3)
+                with c_save:
+                    st.markdown('<div class="btn-success">', unsafe_allow_html=True)
+                    if st.button("💾 Kaydet", use_container_width=True, key="btn_prompt_istem_kaydet"):
+                        try:
+                            os.makedirs(os.path.dirname(txt_yolu), exist_ok=True)
+                            with open(txt_yolu, "w", encoding="utf-8") as f:
+                                f.write(duzenlenen)
+                            st.session_state["prompt_istem_edit"] = duzenlenen
+                            st.session_state[bildirim_key] = ("ok", "✅ Kaydedildi!")
+                        except Exception as e:
+                            st.session_state[bildirim_key] = ("error", f"❌ Kaydedilemedi: {e}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                with c_reload2:
+                    st.markdown('<div class="btn-warning">', unsafe_allow_html=True)
+                    if st.button("↺ Geri Al", use_container_width=True, key="btn_prompt_istem_gerial"):
+                        st.session_state.pop("prompt_istem_edit", None)
+                        ver = st.session_state.get("prompt_istem_widget_ver", 0)
+                        st.session_state["prompt_istem_widget_ver"] = ver + 1
+                        st.session_state[bildirim_key] = ("ok", "↺ Orijinal içeriğe döndürüldü.")
+                        _rerun_dosya_yoneticisi()
+                    st.markdown('</div>', unsafe_allow_html=True)
+                with c_tr:
+                    st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+                    _ceviri_yukleniyor = st.session_state.get("prompt_istem_ceviri_yukleniyor", False)
+                    if st.button("🇹🇷 Çevir", use_container_width=True, key="btn_prompt_istem_cevir", disabled=_ceviri_yukleniyor):
+                        api_key = st.session_state.settings.get("gemini_api_key", "").strip()
+                        if not api_key:
+                            st.session_state[bildirim_key] = ("warn", "⚠️ Çeviri için Ayarlar'dan Gemini API Key girin.")
+                        elif not _GENAI_OK:
+                            st.session_state[bildirim_key] = ("error", "❌ google-genai paketi yüklü değil.")
+                        else:
+                            st.session_state["prompt_istem_ceviri_yukleniyor"] = True
+                            st.session_state["prompt_istem_ceviri_metin"] = st.session_state.get("prompt_istem_edit", duzenlenen)
+                            _rerun_dosya_yoneticisi()
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+                if st.session_state.get("prompt_istem_ceviri_yukleniyor", False):
+                    with st.spinner("Çevriliyor..."):
+                        try:
+                            api_key = st.session_state.settings.get("gemini_api_key", "").strip()
+                            client_tr = _genai.Client(api_key=api_key)
+                            metin_cevrilecek = st.session_state.pop("prompt_istem_ceviri_metin", duzenlenen)
+                            resp_tr = client_tr.models.generate_content(
+                                model=TRANSLATION_MODEL,
+                                contents=f"Aşağıdaki İngilizce prompt metnini Türkçeye çevir. Sadece çeviriyi yaz, başka hiçbir şey ekleme:\n\n{metin_cevrilecek}"
+                            )
+                            st.session_state[ceviri_key] = resp_tr.text
+                            st.session_state[bildirim_key] = ("ok", "✅ Çeviri tamamlandı.")
+                        except Exception as ex:
+                            st.session_state[bildirim_key] = ("error", f"❌ Çeviri hatası: {ex}")
+                    del st.session_state["prompt_istem_ceviri_yukleniyor"]
+                    _rerun_dosya_yoneticisi()
+
+                bildirim = st.session_state.get(bildirim_key)
+                if bildirim and bildirim[0] not in ("copy_pending",):
+                    tip, mesaj = bildirim
+                    st.session_state.pop(bildirim_key, None)
+                    _goster = tip in ("error", "warn") or (tip == "ok" and "Kaydedildi" in mesaj)
+                    if _goster:
+                        _bildirim_ph = st.empty()
+                        if tip == "ok":
+                            _bildirim_ph.success(mesaj)
+                        elif tip == "error":
+                            _bildirim_ph.error(mesaj)
+                        elif tip == "warn":
+                            _bildirim_ph.warning(mesaj)
+                        time.sleep(2.5)
+                        _bildirim_ph.empty()
+
+                if st.session_state.get(ceviri_key):
+                    st.markdown("---")
+                    col_ceviri_title, col_ceviri_kapat = st.columns([0.8, 0.2])
+                    with col_ceviri_title:
+                        st.markdown("**🇹🇷 Türkçe Çeviri:**")
+                    with col_ceviri_kapat:
+                        st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+                        if st.button("✖ Kapat", use_container_width=True, key="btn_prompt_istem_ceviri_kapat"):
+                            st.session_state.pop(ceviri_key, None)
+                            _rerun_dosya_yoneticisi()
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    st.text_area("", value=st.session_state[ceviri_key], height=280, key="prompt_istem_ceviri_area", label_visibility="collapsed")
+            else:
+                st.warning("istem.txt yolu geçersiz veya ayarlanmamış.")
+
         # Promptlar kategorisi: klasör başına 1 prompt.txt göster
-        if secilen_kategori == "📝 Promptlar":
+        elif secilen_kategori == "📝 Promptlar":
             if hedef_klasor and os.path.exists(hedef_klasor):
                 # "Video Prompt 1", "Video Prompt 2" ... klasörlerini bul
                 prompt_girisleri = []
@@ -8360,13 +11501,13 @@ def dosya_yoneticisi_dialog():
                             ver = st.session_state.get(f"prompt_widget_ver_{yeni_idx}", 0)
                             st.session_state[f"prompt_widget_ver_{yeni_idx}"] = ver + 1
                             st.session_state.pop(f"prompt_bildirim_{yeni_idx}", None)
-                            st.rerun()
+                            _rerun_dosya_yoneticisi()
                     with _rb2:
                         _kopya_aktif = st.session_state.get(f"prompt_kopya_goster_{yeni_idx}", False)
                         _kopya_label = "✖ Kopyalamayı Kapat" if _kopya_aktif else "📋 Kopyala"
                         if st.button(_kopya_label, key=f"btn_kopya_{yeni_idx}", use_container_width=True):
                             st.session_state[f"prompt_kopya_goster_{yeni_idx}"] = not _kopya_aktif
-                            st.rerun()
+                            _rerun_dosya_yoneticisi()
 
                     try:
                         with open(txt_yolu, "r", encoding="utf-8") as f:
@@ -8418,7 +11559,7 @@ def dosya_yoneticisi_dialog():
                             ver = st.session_state.get(f"prompt_widget_ver_{yeni_idx}", 0)
                             st.session_state[f"prompt_widget_ver_{yeni_idx}"] = ver + 1
                             st.session_state[bildirim_key] = ("ok", "↺ Orijinal içeriğe döndürüldü.")
-                            st.rerun()
+                            _rerun_dosya_yoneticisi()
                         st.markdown('</div>', unsafe_allow_html=True)
                     with c_tr:
                         st.markdown('<div class="btn-info">', unsafe_allow_html=True)
@@ -8432,7 +11573,7 @@ def dosya_yoneticisi_dialog():
                             else:
                                 st.session_state[f"ceviri_yukleniyor_{yeni_idx}"] = True
                                 st.session_state[f"ceviri_metin_{yeni_idx}"] = st.session_state.get(f"prompt_edit_{yeni_idx}", duzenlenen)
-                                st.rerun()
+                                _rerun_dosya_yoneticisi()
                         st.markdown('</div>', unsafe_allow_html=True)
                     with c_del:
                         st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
@@ -8446,8 +11587,7 @@ def dosya_yoneticisi_dialog():
                                 st.session_state.pop(f"prompt_edit_{yeni_idx}", None)
                                 st.session_state.pop(f"prompt_widget_ver_{yeni_idx}", None)
                                 st.session_state.pop(bildirim_key, None)
-                                st.session_state.ek_dialog_open = "dosya_yoneticisi"
-                                st.rerun()
+                                _rerun_dosya_yoneticisi()
                             except Exception as e:
                                 st.session_state[bildirim_key] = ("error", f"❌ Silinemedi: {e}")
                         st.markdown('</div>', unsafe_allow_html=True)
@@ -8460,7 +11600,7 @@ def dosya_yoneticisi_dialog():
                                 client_tr = _genai.Client(api_key=api_key)
                                 metin_cevrilecek = st.session_state.pop(f"ceviri_metin_{yeni_idx}", duzenlenen)
                                 resp_tr = client_tr.models.generate_content(
-                                    model="gemini-2.0-flash",
+                                    model=TRANSLATION_MODEL,
                                     contents=f"Aşağıdaki İngilizce prompt metnini Türkçeye çevir. Sadece çeviriyi yaz, başka hiçbir şey ekleme:\n\n{metin_cevrilecek}"
                                 )
                                 st.session_state[ceviri_key] = resp_tr.text
@@ -8468,7 +11608,7 @@ def dosya_yoneticisi_dialog():
                             except Exception as ex:
                                 st.session_state[bildirim_key] = ("error", f"❌ Çeviri hatası: {ex}")
                         del st.session_state[f"ceviri_yukleniyor_{yeni_idx}"]
-                        st.rerun()
+                        _rerun_dosya_yoneticisi()
 
                     # İşlem bildirimi — göster ve state'i temizle (bir sonraki render'da kaybolur)
                     bildirim = st.session_state.get(bildirim_key)
@@ -8498,7 +11638,7 @@ def dosya_yoneticisi_dialog():
                             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                             if st.button("✖ Kapat", use_container_width=True, key=f"btn_ceviri_kapat_{yeni_idx}"):
                                 st.session_state.pop(ceviri_key, None)
-                                st.rerun()
+                                _rerun_dosya_yoneticisi()
                             st.markdown('</div>', unsafe_allow_html=True)
                         st.text_area("", value=st.session_state[ceviri_key], height=280, key=f"prompt_ceviri_area_{yeni_idx}", label_visibility="collapsed")
                 else:
@@ -8509,36 +11649,11 @@ def dosya_yoneticisi_dialog():
         # Medya kategorileri: video / görsel
         else:
             if hedef_klasor and os.path.exists(hedef_klasor):
-                dosyalar = []
-                for root, _, files in os.walk(hedef_klasor):
-                    for file in files:
-                        if file.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.jpg', '.jpeg', '.png', '.bmp', '.webp')):
-                            tam_yol = os.path.join(root, file)
-                            rel_yol = os.path.relpath(tam_yol, hedef_klasor)
-                            dosyalar.append((rel_yol, tam_yol))
-                
-                dosyalar.sort(key=lambda x: natural_sort_key(x[0]))
+                medya_tipi = "video" if "Video" in secilen_kategori else "gorsel" if "Görsel" in secilen_kategori else None
+                dosyalar = _list_media_preview_entries(hedef_klasor, medya_tipi)
                 
                 if dosyalar:
-                    # Her dosya = bir öğe; alt klasör adı kullanılmaz.
-                    # "Oluşturulan Görseller" → Görsel 1, Görsel 2, ...
-                    # "Klon Görseller"        → Görsel 1, Görsel 2, ...
-                    # "Üretilen Videolar"     → Video 1, Video 2, ...
-                    # Diğerleri              → dosya adı
-                    _is_gorsel_cat = secilen_kategori in ("🖼️ Oluşturulan Görseller", "🎨 Klon Görseller")
-                    _is_video_cat  = secilen_kategori in ("🎬 Üretilen Videolar",) or "Video" in secilen_kategori
-
-                    etiketler = []
-                    for idx, (rel_yol, _) in enumerate(dosyalar, start=1):
-                        if _is_gorsel_cat:
-                            etiketler.append(f"Görsel {idx}")
-                        elif _is_video_cat:
-                            etiketler.append(f"Video {idx}")
-                        else:
-                            isim = os.path.splitext(os.path.basename(rel_yol))[0]
-                            etiketler.append(isim[:37] + "..." if len(isim) > 40 else isim)
-
-
+                    etiketler = [item["label"] for item in dosyalar]
                     mevcut_idx = st.session_state.get("fileman_file_idx", 0)
                     if mevcut_idx >= len(dosyalar):
                         mevcut_idx = 0
@@ -8552,7 +11667,9 @@ def dosya_yoneticisi_dialog():
                     yeni_idx = etiketler.index(secilen_etiket)
                     st.session_state["fileman_file_idx"] = yeni_idx
 
-                    secilen_dosya_rel, secilen_dosya_tam = dosyalar[yeni_idx]
+                    secilen_kayit = dosyalar[yeni_idx]
+                    secilen_dosya_rel = secilen_kayit["rel_path"]
+                    secilen_dosya_tam = secilen_kayit["path"]
                     ext = os.path.splitext(secilen_dosya_tam)[1].lower()
 
                     st.markdown("---")
@@ -8584,9 +11701,8 @@ def dosya_yoneticisi_dialog():
                                     if k in ("gorsel_analiz_klasor_sec",) or k.startswith(f"sel_{silinen_klasor_adi}"):
                                         del st.session_state[k]
                             st.session_state["fileman_file_idx"] = max(0, yeni_idx - 1)
-                            st.session_state.ek_dialog_open = "dosya_yoneticisi"
                             st.success("Dosya silindi!")
-                            st.rerun()
+                            _rerun_dosya_yoneticisi()
                         except Exception as e:
                             st.error(f"Silinemedi: {e}")
                     st.markdown('</div>', unsafe_allow_html=True)
@@ -8601,22 +11717,24 @@ def dosya_yoneticisi_dialog():
             # Sıralama: İncele & Seçerek Sil ile aynı
             montaj_entries = _list_entries(s.get("video_montaj_output_dir"))
             pick_montaj = st.multiselect("🎞️ Montaj Videoları", [e[0] for e in montaj_entries])
-            video_entries = _list_media_files_clean(s.get("video_output_dir"))
+            video_entries = _list_media_files_clean(s.get("video_output_dir"), "video")
             pick_video = st.multiselect("🎬 Üretilen Videolar", [e[0] for e in video_entries])
+            klon_video_entries = _list_media_files_clean(s.get("klon_video_dir") or s.get("video_klonla_dir"), "video")
+            pick_klon_video = st.multiselect("🎬 Klon Videolar", [e[0] for e in klon_video_entries])
             prompt_entries = _list_entries(s.get("prompt_dir"))
             pick_prompt = st.multiselect("📝 Promptlar", [e[0] for e in prompt_entries])
-            gorsel_olustur_entries = _list_media_files_clean(s.get("gorsel_olustur_dir"))
+            gorsel_olustur_entries = _list_media_files_clean(s.get("gorsel_olustur_dir"), "gorsel")
             pick_gorsel_olustur = st.multiselect("🖼️ Oluşturulan Görseller", [e[0] for e in gorsel_olustur_entries])
-            klon_entries = _list_media_files_clean(s.get("klon_gorsel_dir"))
+            klon_entries = _list_media_files_clean(s.get("klon_gorsel_dir"), "gorsel")
             pick_klon = st.multiselect("🎨 Klon Görseller", [e[0] for e in klon_entries])
-            gorsel_analiz_entries = _list_media_files_clean(s.get("gorsel_analiz_dir"))
+            gorsel_analiz_entries = _list_media_files_clean(s.get("gorsel_analiz_dir"), "gorsel")
             pick_gorsel_analiz = st.multiselect("🖼️ Görsel Analiz", [e[0] for e in gorsel_analiz_entries])
             indir_entries = _list_entries(s.get("download_dir"))
             pick_indir = st.multiselect("⬇️ İndirilen Videolar", [e[0] for e in indir_entries])
 
             # ── Görsel Klonlama TXT
             gorsel_duzelt_data = gorsel_duzelt_oku()
-            gorsel_duzelt_options = [f"Görsel {no}: \"{val}\"" for no, val in sorted(gorsel_duzelt_data.items())]
+            gorsel_duzelt_options = [f"Görsel {no}: \"{_gorsel_klon_prompt_display_text(val)}\"" for no, val in sorted(gorsel_duzelt_data.items())]
             pick_gorsel_duzelt = st.multiselect("🎨 Görsel Klonlama TXT", gorsel_duzelt_options)
 
             # ── Prompt Düzeltme TXT
@@ -8642,6 +11760,7 @@ def dosya_yoneticisi_dialog():
             if st.button("🗑️ Seçilenleri Temizle", use_container_width=True):
                 for n in pick_montaj: _delete_path({name: p for name, p, _ in montaj_entries}.get(n, ""))
                 for n in pick_video: _delete_path({name: p for name, p, _ in video_entries}.get(n, ""))
+                for n in pick_klon_video: _delete_path({name: p for name, p, _ in klon_video_entries}.get(n, ""))
                 for n in pick_prompt: _delete_path({name: p for name, p, _ in prompt_entries}.get(n, ""))
                 for n in pick_gorsel_olustur: _delete_path({name: p for name, p, _ in gorsel_olustur_entries}.get(n, ""))
                 for n in pick_klon: _delete_path({name: p for name, p, _ in klon_entries}.get(n, ""))
@@ -8683,8 +11802,7 @@ def dosya_yoneticisi_dialog():
                     prompt_duzeltme_kaydet(yeni_data)
 
                 st.success("Seçili öğeler silindi.")
-                st.session_state.ek_dialog_open = "dosya_yoneticisi"
-                st.rerun()
+                _rerun_dosya_yoneticisi()
             st.markdown('</div>', unsafe_allow_html=True)
         else:
             conf = st.checkbox("Evet, her şeyi sil")
@@ -8693,8 +11811,7 @@ def dosya_yoneticisi_dialog():
                 clean_all_targets()
                 log("[OK] Tüm dosyalar temizlendi.")
                 st.session_state["dosya_yoneticisi_temizlendi_notice"] = "✅ Tüm dosyalar başarıyla temizlendi."
-                st.session_state.ek_dialog_open = "dosya_yoneticisi"
-                st.rerun()
+                _rerun_dosya_yoneticisi()
             st.markdown('</div>', unsafe_allow_html=True)
 
             if st.session_state.get("dosya_yoneticisi_temizlendi_notice"):
@@ -8706,8 +11823,10 @@ def dosya_yoneticisi_dialog():
 
         _ec_kategoriler = {
             "🎬 Üretilen Videolar": {"dir": s.get("video_output_dir", ""), "tip": "video", "prefix": "Video"},
+            "🎬 Klon Videolar": {"dir": s.get("klon_video_dir", "") or s.get("video_klonla_dir", ""), "tip": "video", "prefix": "Video"},
             "🎬 Toplu Montaj Videoları": {"dir": s.get("toplu_video_output_dir", ""), "tip": "video", "prefix": "Toplu Montaj"},
             "🎞️ Montaj Videoları": {"dir": s.get("video_montaj_output_dir", ""), "tip": "video", "prefix": "Montaj"},
+            "🎞️ Eklenen Videolar": {"dir": s.get("added_video_dir", ""), "tip": "video", "prefix": "Video"},
             "⬇️ İndirilen Videolar": {"dir": s.get("download_dir", ""), "tip": "video", "prefix": "Video"},
             "🖼️ Oluşturulan Görseller": {"dir": s.get("gorsel_olustur_dir", ""), "tip": "gorsel", "prefix": "Görsel"},
             "🎨 Klon Görseller": {"dir": s.get("klon_gorsel_dir", ""), "tip": "gorsel", "prefix": "Klon Görsel"},
@@ -8727,7 +11846,8 @@ def dosya_yoneticisi_dialog():
         if _ec_islem.startswith("📤"):
             st.markdown("**Seçili kategorideki tüm desteklenen medya dosyalarını kopyalayın.**")
             if _ec_hedef and os.path.exists(_ec_hedef):
-                _ec_medya_dosyalari = _list_media_files_clean(_ec_hedef)
+                _ec_medya_tipi = _ec_tip if _ec_tip in ("video", "gorsel") else None
+                _ec_medya_dosyalari = _list_media_files_clean(_ec_hedef, _ec_medya_tipi)
                 _ec_secenekler_mapper = {g: t for g, t, _ in _ec_medya_dosyalari}
                 
                 if _ec_secenekler_mapper:
@@ -9159,11 +12279,10 @@ def render_durum_ozeti_modal():
 </script>
 """
 
-    with st.sidebar:
-        _st_components.html(bridge_script, height=0)
-        if st.button("kapat_gizli", key="do_kapat_hidden"):
-            st.session_state.durum_ozeti_dialog_open = False
-            st.rerun()
+    _st_components.html(bridge_script, height=0)
+    if st.button("kapat_gizli", key="do_kapat_hidden"):
+        st.session_state.durum_ozeti_dialog_open = False
+        st.rerun()
 
 @st.dialog("📂 Ek İşlemler", width="small")
 def ek_islemler_menu_dialog():
@@ -9196,7 +12315,7 @@ def ek_islemler_menu_dialog():
     c_chk, c_btn = st.columns([0.12, 0.88])
     with c_chk:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["video_indir"] = st.checkbox("Video İndir seçimi", value=secs.get("video_indir", True), key="chk_video_indir", label_visibility="collapsed")
+        secs["video_indir"] = _batch_selection_checkbox("video_indir", "Video İndir seçimi", "chk_video_indir")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn:
         st.markdown('<div class="btn-success">', unsafe_allow_html=True)
@@ -9214,7 +12333,7 @@ def ek_islemler_menu_dialog():
     c_chk2, c_btn2 = st.columns([0.12, 0.88])
     with c_chk2:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["gorsel_analiz"] = st.checkbox("Görsel Analiz seçimi", value=secs.get("gorsel_analiz", False), key="chk_gorsel_analiz", label_visibility="collapsed")
+        secs["gorsel_analiz"] = _batch_selection_checkbox("gorsel_analiz", "Görsel Analiz seçimi", "chk_gorsel_analiz")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn2:
         st.markdown('<div class="btn-teal">', unsafe_allow_html=True)
@@ -9226,7 +12345,7 @@ def ek_islemler_menu_dialog():
     c_chk3, c_btn3 = st.columns([0.12, 0.88])
     with c_chk3:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["gorsel_klonla"] = st.checkbox("Görsel Klonla seçimi", value=secs.get("gorsel_klonla", False), key="chk_gorsel_klonla", label_visibility="collapsed")
+        secs["gorsel_klonla"] = _batch_selection_checkbox("gorsel_klonla", "Görsel Klonla seçimi", "chk_gorsel_klonla")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn3:
         st.markdown('<div class="btn-warning">', unsafe_allow_html=True)
@@ -9238,7 +12357,7 @@ def ek_islemler_menu_dialog():
     c_chk4, c_btn4 = st.columns([0.12, 0.88])
     with c_chk4:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["prompt_duzeltme"] = st.checkbox("Prompt Düzeltme seçimi", value=secs.get("prompt_duzeltme", False), key="chk_prompt_duzeltme", label_visibility="collapsed")
+        secs["prompt_duzeltme"] = _batch_selection_checkbox("prompt_duzeltme", "Prompt Düzeltme seçimi", "chk_prompt_duzeltme")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn4:
         st.markdown('<div class="btn-purple">', unsafe_allow_html=True)
@@ -9250,7 +12369,7 @@ def ek_islemler_menu_dialog():
     c_chk_go, c_btn_go = st.columns([0.12, 0.88])
     with c_chk_go:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["gorsel_olustur"] = st.checkbox("Görsel Oluştur seçimi", value=secs.get("gorsel_olustur", False), key="chk_gorsel_olustur", label_visibility="collapsed")
+        secs["gorsel_olustur"] = _batch_selection_checkbox("gorsel_olustur", "Görsel Oluştur seçimi", "chk_gorsel_olustur")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn_go:
         st.markdown('<div class="btn-teal">', unsafe_allow_html=True)
@@ -9258,11 +12377,23 @@ def ek_islemler_menu_dialog():
             st.session_state.ek_dialog_open = "gorsel_olustur"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+    c_chk_vk, c_btn_vk = st.columns([0.12, 0.88])
+    with c_chk_vk:
+        st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
+        secs["video_klonla"] = _batch_selection_checkbox("video_klonla", "Video Klonla seçimi", "chk_video_klonla")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c_btn_vk:
+        st.markdown('<div class="btn-teal">', unsafe_allow_html=True)
+        if st.button("🎬 Video Klonla", key="dlg_btn_video_klonla", use_container_width=True, disabled=is_ui_locked()):
+            st.session_state.ek_dialog_open = "video_klonla"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
 
     c_chk5, c_btn5 = st.columns([0.12, 0.88])
     with c_chk5:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["video_montaj"] = st.checkbox("Video Montaj seçimi", value=secs.get("video_montaj", False), key="chk_video_montaj", label_visibility="collapsed")
+        secs["video_montaj"] = _batch_selection_checkbox("video_montaj", "Video Montaj seçimi", "chk_video_montaj")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn5:
         st.markdown('<div class="btn-info">', unsafe_allow_html=True)
@@ -9274,7 +12405,7 @@ def ek_islemler_menu_dialog():
     c_chk6, c_btn6 = st.columns([0.12, 0.88])
     with c_chk6:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["toplu_video"] = st.checkbox("Toplu Video seçimi", value=secs.get("toplu_video", False), key="chk_toplu_video", label_visibility="collapsed")
+        secs["toplu_video"] = _batch_selection_checkbox("toplu_video", "Toplu Video seçimi", "chk_toplu_video")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn6:
         st.markdown('<div class="btn-primary">', unsafe_allow_html=True)
@@ -9286,7 +12417,7 @@ def ek_islemler_menu_dialog():
     c_chk7, c_btn7 = st.columns([0.12, 0.88])
     with c_chk7:
         st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
-        secs["sosyal_medya"] = st.checkbox("Sosyal Medya Paylaşım seçimi", value=secs.get("sosyal_medya", False), key="chk_sosyal_medya", label_visibility="collapsed")
+        secs["sosyal_medya"] = _batch_selection_checkbox("sosyal_medya", "Sosyal Medya Paylaşım seçimi", "chk_sosyal_medya")
         st.markdown("</div>", unsafe_allow_html=True)
     with c_btn7:
         st.markdown('<div class="btn-warning">', unsafe_allow_html=True)
@@ -9534,14 +12665,25 @@ if "video_listesi_dialog" not in globals():
             st.markdown('</div>', unsafe_allow_html=True)
 
 
-    @st.dialog("🎞️ Video Ekle", width="large")
+    @st.dialog("🎞️ Video Ekle", width="large", on_dismiss=_handle_ek_dialog_dismiss)
     def video_ekle_dialog():
         hedef_root = _get_added_video_dir()
         mevcutlar = _list_added_video_entries()
+        planli_mevcutlar = _list_planned_added_video_entries() if not mevcutlar else []
+        indirilenler = _list_download_video_entries()
+        indirilen_harita = {
+            str(item.get("video_path") or "").strip(): item
+            for item in indirilenler
+            if str(item.get("video_path") or "").strip()
+        }
+        link_girdileri = _read_video_link_entries()
+        link_harita = {str(item.get("no")): item for item in link_girdileri}
+        kayitli_bolum_plan_sayisi = _count_video_bolum_link_plans()
 
-        st.caption("Bilgisayarınızdan videoları seçin. Ekle mevcut Eklenen Video içeriğini yeniler, Devamına Ekle ise yeni videoları mevcutların sonuna Video 1, Video 2, Video 3... sırasını bozmadan ekler.")
-        st.info(f"Hedef klasör: {hedef_root} | Mevcut eklenen video: {len(mevcutlar)}")
-        st.caption("Not: Ekle baştan yazar, Devamına Ekle ise mevcut videoları koruyup yeni seçtiklerinizi devamına ekler.")
+        st.caption("Bilgisayarınızdan video yükleyebilir veya indirilen videoları doğrudan bu listeye ekleyebilirsiniz. Ekle mevcut Eklenen Video içeriğini yeniler, Devamına Ekle ise yeni videoları mevcutların sonuna Video 1, Video 2, Video 3... sırasını bozmadan ekler.")
+        plan_bilgi = f" | Kayitli bolum plani: {len(planli_mevcutlar)}" if planli_mevcutlar else ""
+        st.info(f"Hedef klasör: {hedef_root} | Mevcut eklenen video: {len(mevcutlar)} | İndirilen video: {len(indirilenler)}{plan_bilgi}")
+        st.caption("Not: Tek video seçerseniz Videoyu Bölümlerine Ayır ile parçalayabilirsiniz. Birden fazla video seçtiğinizde Ekle veya Devamına Ekle ile topluca aktarabilirsiniz.")
 
         secilenler = st.file_uploader(
             "Videoları seçin:",
@@ -9550,18 +12692,113 @@ if "video_listesi_dialog" not in globals():
             key="dlg_video_ekle_files",
         )
 
-        if secilenler:
+        secili_indirilen_yollar = st.multiselect(
+            "📥 İndirilen videolardan ekle:",
+            options=list(indirilen_harita.keys()),
+            default=[],
+            format_func=lambda path: (
+                f"İndirilen Video {indirilen_harita[path].get('no', '?')}"
+            ) if path in indirilen_harita else os.path.basename(path),
+            key="dlg_video_ekle_download_pick",
+            disabled=not bool(indirilen_harita),
+        )
+
+        if not indirilen_harita:
+            st.caption("İndirilen video bulunamadı. Önce ⬇️ Video İndir ile video indirirseniz burada doğrudan seçebilirsiniz.")
+
+        secili_link_no = st.selectbox(
+            "🔗 İndirilecek linkten bölüm planı hazırla:",
+            options=[""] + list(link_harita.keys()),
+            index=0,
+            format_func=lambda no: (
+                "Link seçin"
+                if not no
+                else (
+                    f"Link Video {link_harita[no].get('no')} - "
+                    f"{_video_bolum_shorten_url(link_harita[no].get('url'), 74)}"
+                    + (" (plan kayıtlı)" if _video_bolum_plan_for_link(link_harita[no].get("no"), link_harita[no].get("url")) else "")
+                )
+            ),
+            key="dlg_video_ekle_link_bolum_pick",
+            disabled=not bool(link_harita),
+        )
+        if not link_harita:
+            st.caption("Link bulunamadı. Önce Video Listesi Ekle bölümünden link ekleyin.")
+        elif kayitli_bolum_plan_sayisi:
+            st.caption(f"Kayıtlı bölüm planı: {kayitli_bolum_plan_sayisi}. Tümünü Çalıştır sırasında indirme bittikten sonra otomatik uygulanır.")
+        if planli_mevcutlar:
+            st.info("Kaydedilmiş bölüm planları bulundu. Bu planlar indirme adımından sonra otomatik olarak Eklenen Video klasörüne dönüştürülecek.")
+
+        secili_kaynaklar = []
+        for idx, up in enumerate(secilenler or [], start=1):
+            dosya_adi = os.path.basename(str(getattr(up, "name", "") or f"video_{idx}.mp4"))
+            secili_kaynaklar.append({
+                "kind": "upload",
+                "name": dosya_adi,
+                "uploaded_file": up,
+                "display_label": f"Bilgisayardan Yüklendi → {dosya_adi}",
+            })
+
+        for yol in secili_indirilen_yollar:
+            item = indirilen_harita.get(yol)
+            if not item:
+                continue
+            dosya_adi = os.path.basename(str(item.get("video_name") or os.path.basename(yol) or "video.mp4"))
+            secili_kaynaklar.append({
+                "kind": "download",
+                "name": dosya_adi,
+                "video_path": str(item.get("video_path") or "").strip(),
+                "source_no": item.get("no"),
+                "display_label": f"İndirilen Video {item.get('no', '?')}",
+            })
+
+        secili_link_kaynak = None
+        if secili_link_no and secili_link_no in link_harita:
+            link_item = link_harita[secili_link_no]
+            secili_link_kaynak = {
+                "kind": "link_plan",
+                "name": f"Link Video {link_item.get('no')}",
+                "source_no": link_item.get("no"),
+                "url": str(link_item.get("url") or "").strip(),
+                "display_label": f"Link Video {link_item.get('no')} → {_video_bolum_shorten_url(link_item.get('url'), 92)}",
+            }
+
+        if secili_kaynaklar:
             st.markdown("**Seçilen videolar:**")
-            for idx, up in enumerate(secilenler, start=1):
-                st.caption(f"{idx}. {getattr(up, 'name', f'Video {idx}')}")
+            for idx, kaynak in enumerate(secili_kaynaklar, start=1):
+                st.caption(f"{idx}. {kaynak['display_label']}")
+        if secili_link_kaynak:
+            st.markdown("**Bölüm planı hazırlanacak link:**")
+            st.caption(secili_link_kaynak["display_label"])
         elif mevcutlar:
             st.markdown("**Klasördeki mevcut videolar:**")
             for item in mevcutlar:
                 st.caption(f"{item['no']}. {item['folder_name']} → {item['video_name']}")
+        elif planli_mevcutlar:
+            st.markdown("**Kaydedilmiş bölüm planından oluşacak videolar:**")
+            for item in planli_mevcutlar:
+                st.caption(
+                    f"{item['no']}. Link Video {item.get('source_no', '?')} → Bölüm {item.get('segment_no', '?')} "
+                    f"({_format_mmss_ms(item.get('segment_start', 0.0))} - {_format_mmss_ms(item.get('segment_end', 0.0))})"
+                )
+
+        def _video_ekle_kaynagi_hedefe_yaz(kaynak: dict, hedef_yol: str):
+            if str((kaynak or {}).get("kind") or "") == "download":
+                source_path = str((kaynak or {}).get("video_path") or "").strip()
+                if not source_path or not os.path.isfile(source_path):
+                    raise FileNotFoundError("Seçilen indirilen video bulunamadı.")
+                shutil.copy2(source_path, hedef_yol)
+                return
+
+            up = (kaynak or {}).get("uploaded_file")
+            if up is None:
+                raise ValueError("Yüklenen video okunamadı.")
+            with open(hedef_yol, "wb") as f:
+                f.write(up.getbuffer())
 
         def _kaydet_secilen_videolar(append_mode: bool = False):
-            if not secilenler:
-                st.error("Lütfen en az bir video seçin.")
+            if not secili_kaynaklar:
+                st.error("Lütfen en az bir video seçin veya indirilen videolardan ekleyin.")
                 return
 
             try:
@@ -9581,26 +12818,29 @@ if "video_listesi_dialog" not in globals():
                     _purge_prompt_state_for_prefix(hedef_root)
                     baslangic_no = 1
 
-                for offset, up in enumerate(secilenler):
+                for offset, kaynak in enumerate(secili_kaynaklar):
                     video_no = baslangic_no + offset
                     klasor = os.path.join(hedef_root, f"Video {video_no}")
                     os.makedirs(klasor, exist_ok=True)
-                    dosya_adi = os.path.basename(str(getattr(up, "name", "") or f"video_{video_no}.mp4"))
+                    dosya_adi = os.path.basename(str(kaynak.get("name") or f"video_{video_no}.mp4"))
                     if not _is_supported_video_name(dosya_adi):
                         kok, ext = os.path.splitext(dosya_adi)
                         dosya_adi = (kok or f"video_{video_no}") + (ext if ext else ".mp4")
-                    with open(os.path.join(klasor, dosya_adi), "wb") as f:
-                        f.write(up.getbuffer())
+                    hedef_yol = os.path.join(klasor, dosya_adi)
+                    _video_ekle_kaynagi_hedefe_yaz(kaynak, hedef_yol)
 
                 _write_prompt_source_mode(PROMPT_SOURCE_ADDED_VIDEO)
                 set_link_canvas_source("added_video")
+                clear_placeholder = globals().get("_clear_empty_source_placeholder")
+                if callable(clear_placeholder):
+                    clear_placeholder()
                 st.session_state.status["youtube_link"] = "idle"
                 st.session_state.status["input"] = "ok"
                 if append_mode:
-                    son_no = baslangic_no + len(secilenler) - 1
-                    st.session_state["video_ekle_saved_notice"] = f"Kaydedildi! {len(secilenler)} video mevcut listenin devamına eklendi (Video {baslangic_no}-Video {son_no})."
+                    son_no = baslangic_no + len(secili_kaynaklar) - 1
+                    st.session_state["video_ekle_saved_notice"] = f"Kaydedildi! {len(secili_kaynaklar)} video mevcut listenin devamına eklendi (Video {baslangic_no}-Video {son_no})."
                 else:
-                    st.session_state["video_ekle_saved_notice"] = f"Kaydedildi! {len(secilenler)} video Eklenen Video klasörüne aktarıldı."
+                    st.session_state["video_ekle_saved_notice"] = f"Kaydedildi! {len(secili_kaynaklar)} video Eklenen Video klasörüne aktarıldı."
                 st.session_state.ek_dialog_open = "video_ekle"
                 st.rerun()
             except Exception as e:
@@ -9633,16 +12873,50 @@ if "video_listesi_dialog" not in globals():
         st.markdown("---")
         st.markdown('<div class="btn-purple">', unsafe_allow_html=True)
         if st.button("✂️ Videoyu Bölümlerine Ayır", key="dlg_video_ekle_bolumle", use_container_width=True):
-            if not secilenler or len(secilenler) != 1:
-                st.error("Bölümlerine ayırmak için lütfen tek bir video seçin.")
+            bolum_kaynaklari = list(secili_kaynaklar)
+            if secili_link_kaynak:
+                bolum_kaynaklari.append(secili_link_kaynak)
+
+            if len(bolum_kaynaklari) != 1:
+                st.error("Bölümlerine ayırmak için lütfen tek bir video veya tek bir link seçin.")
             else:
-                up = secilenler[0]
+                kaynak = bolum_kaynaklari[0]
+                if str(kaynak.get("kind") or "") == "link_plan":
+                    st.session_state.video_bolum_source_kind = "link"
+                    st.session_state.video_bolum_source_no = kaynak.get("source_no")
+                    st.session_state.video_bolum_source_url = str(kaynak.get("url") or "").strip()
+                    st.session_state.video_bolum_source_title = str(kaynak.get("name") or "").strip()
+                    st.session_state.video_bolum_source_duration = 0.0
+                    st.session_state.video_bolum_preview_url = ""
+                    st.session_state.video_bolum_temp_path = None
+                    st.session_state.video_bolum_temp_name = str(kaynak.get("name") or "Link Video")
+                    st.session_state.video_bolum_sureler = []
+                    st.session_state.pop("_dlg_bolum_pending_updates", None)
+                    st.session_state.pop("_bolum_sayisi_prev", None)
+                    st.session_state.pop("_bolum_sure_secim", None)
+                    st.session_state.pop("_video_bolum_init_token", None)
+                    st.session_state.ek_dialog_open = "video_bolumle"
+                    st.rerun()
+
                 temp_dir = os.path.join(CONTROL_DIR, "_temp_video_split")
                 os.makedirs(temp_dir, exist_ok=True)
-                dosya_adi = os.path.basename(str(getattr(up, "name", "") or "video.mp4"))
-                temp_path = os.path.join(temp_dir, dosya_adi)
-                with open(temp_path, "wb") as f:
-                    f.write(up.getbuffer())
+                dosya_adi = os.path.basename(str(kaynak.get("name") or "video.mp4"))
+                if not _is_supported_video_name(dosya_adi):
+                    kok, ext = os.path.splitext(dosya_adi)
+                    dosya_adi = (kok or "video") + (ext if ext else ".mp4")
+                temp_path = os.path.join(temp_dir, f"{int(time.time() * 1000)}_{dosya_adi}")
+                try:
+                    _video_ekle_kaynagi_hedefe_yaz(kaynak, temp_path)
+                except Exception as e:
+                    st.error(f"Bölümleme için video hazırlanamadı: {e}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    return
+                st.session_state.video_bolum_source_kind = "file"
+                st.session_state.video_bolum_source_no = None
+                st.session_state.video_bolum_source_url = ""
+                st.session_state.video_bolum_source_title = ""
+                st.session_state.video_bolum_source_duration = 0.0
+                st.session_state.video_bolum_preview_url = ""
                 st.session_state.video_bolum_temp_path = temp_path
                 st.session_state.video_bolum_temp_name = dosya_adi
                 st.session_state.video_bolum_sureler = []
@@ -9651,11 +12925,16 @@ if "video_listesi_dialog" not in globals():
         st.markdown('</div>', unsafe_allow_html=True)
 
 
-@st.dialog("✂️ Videoyu Bölümlerine Ayır", width="large")
+@st.dialog("✂️ Videoyu Bölümlerine Ayır", width="large", on_dismiss=_handle_ek_dialog_dismiss)
 def video_bolumlerine_ayir_dialog():
     hedef_root = _get_added_video_dir()
     temp_path = st.session_state.get("video_bolum_temp_path")
     temp_name = st.session_state.get("video_bolum_temp_name", "video.mp4")
+    source_kind = str(st.session_state.get("video_bolum_source_kind") or "file").strip()
+    is_link_source = source_kind == "link"
+    source_no = st.session_state.get("video_bolum_source_no")
+    source_url = str(st.session_state.get("video_bolum_source_url") or "").strip()
+    video_source_token = temp_path or ""
 
     # Başarı bildirimi
     if st.session_state.get("video_bolum_saved_notice"):
@@ -9665,32 +12944,132 @@ def video_bolumlerine_ayir_dialog():
         _vb_ph.empty()
         st.session_state.pop("video_bolum_saved_notice", None)
 
-    if not temp_path or not os.path.isfile(temp_path):
+    if is_link_source:
+        if not source_url:
+            st.error("Bölümlenecek link bulunamadı. Lütfen önce Video Ekle bölümünden bir link seçin.")
+            if st.button("⬅️ Geri", key="dlg_bolum_geri_link_hata", use_container_width=True):
+                st.session_state.ek_dialog_open = "video_ekle"
+                st.rerun()
+            return
+
+        video_source_token = f"link:{source_no}:{source_url}"
+        with st.spinner("Link video bilgisi alınıyor..."):
+            preview_info = _resolve_video_bolum_link_preview(source_url)
+        preview_url = str(preview_info.get("preview_url") or source_url).strip()
+        video_suresi = float(preview_info.get("duration") or 0.0)
+        temp_name = str(preview_info.get("title") or st.session_state.get("video_bolum_source_title") or f"Link Video {source_no or ''}").strip() or "Link Video"
+        st.session_state.video_bolum_preview_url = preview_url
+        st.session_state.video_bolum_source_duration = video_suresi
+        st.session_state.video_bolum_source_title = temp_name
+    elif not temp_path or not os.path.isfile(temp_path):
         st.error("Bölümlenecek video bulunamadı. Lütfen önce Video Ekle bölümünden bir video seçin.")
         if st.button("⬅️ Geri", key="dlg_bolum_geri_hata", use_container_width=True):
             st.session_state.ek_dialog_open = "video_ekle"
             st.rerun()
         return
+    else:
+        video_source_token = temp_path
+        # Video süresini al
+        video_suresi = _get_video_duration_seconds(temp_path)
 
-    # Video süresini al
-    video_suresi = _get_video_duration_seconds(temp_path)
     if video_suresi <= 0:
-        st.error("Video süresi okunamadı. Lütfen geçerli bir video dosyası seçin.")
+        if is_link_source:
+            st.error("Linkteki video süresi okunamadı. Önizleme için link bilgisi alınamadığından bölüm planı kaydedilemiyor.")
+            hata = _resolve_video_bolum_link_preview(source_url).get("error") if source_url else ""
+            if hata:
+                st.caption(str(hata))
+        else:
+            st.error("Video süresi okunamadı. Lütfen geçerli bir video dosyası seçin.")
         if st.button("⬅️ Geri", key="dlg_bolum_geri_sure_hata", use_container_width=True):
             st.session_state.ek_dialog_open = "video_ekle"
             st.rerun()
         return
 
-    st.caption(f"Seçilen video: **{temp_name}** | Toplam süre: **{_format_duration(video_suresi)}** ({video_suresi:.1f} saniye) | **{_format_mmss(video_suresi)}**")
-    st.info(f"Hedef klasör: {hedef_root}")
+    kaynak_baslik = f"Link Video {source_no}" if is_link_source else "Seçilen video"
+    st.caption(f"{kaynak_baslik}: **{temp_name}** | Toplam süre: **{_format_duration_ms(video_suresi)}** ({video_suresi:.3f} saniye) | **{_format_mmss_ms(video_suresi)}**")
+    if is_link_source:
+        st.info("Bu link için bölüm zamanları kaydedilecek. Tümünü Çalıştır içinde video indirildikten sonra bu zamanlara göre otomatik kesilecek.")
+    else:
+        st.info(f"Hedef klasör: {hedef_root}")
 
     # Video önizleme
     try:
-        st.video(temp_path)
+        st.video(preview_url if is_link_source else temp_path)
     except Exception:
         st.warning("Önizleme yüklenemedi.")
 
+    st.markdown("**Yavaş Oynatma ve Milisaniye Takibi:**")
+    _render_video_bolum_precision_controls()
+    st.caption("Zaman alanları M:SS:mmm veya M:SS.mmm formatını destekler. Örn: 0:12:350, 0:12.350 ya da 12.350 saniye.")
+
     st.caption("Videoyu istediğiniz zaman aralıklarında bölümlerine ayırın. Her bölüm ayrı bir Video klasörüne kaydedilir.")
+
+    def _clear_bolum_widget_keys():
+        for _old_i in range(50):
+            st.session_state.pop(f"dlg_bolum_baslangic_{_old_i}", None)
+            st.session_state.pop(f"dlg_bolum_bitis_{_old_i}", None)
+
+    def _build_equal_segments(segment_count: int) -> list[tuple[float, float]]:
+        segment_count = max(1, int(segment_count))
+        esit_sure = video_suresi / segment_count
+        segmentler = []
+        for _new_i in range(segment_count):
+            _s = round(esit_sure * _new_i, 3)
+            _e = round(esit_sure * (_new_i + 1), 3) if _new_i < segment_count - 1 else round(video_suresi, 3)
+            segmentler.append((_s, _e))
+        return segmentler
+
+    def _write_segment_state(segmentler: list[tuple[float, float]]):
+        _clear_bolum_widget_keys()
+        for _new_i, (_s, _e) in enumerate(segmentler):
+            st.session_state[f"dlg_bolum_baslangic_{_new_i}"] = _format_mmss_ms(_s)
+            st.session_state[f"dlg_bolum_bitis_{_new_i}"] = _format_mmss_ms(_e)
+
+    def _read_segment_text_state(segment_count: int) -> list[tuple[str, str]]:
+        segmentler = []
+        for _idx in range(max(0, int(segment_count))):
+            segmentler.append((
+                str(st.session_state.get(f"dlg_bolum_baslangic_{_idx}") or ""),
+                str(st.session_state.get(f"dlg_bolum_bitis_{_idx}") or ""),
+            ))
+        return segmentler
+
+    def _write_segment_text_state(segmentler: list[tuple[str, str]]):
+        _clear_bolum_widget_keys()
+        for _new_i, (_bs, _es) in enumerate(segmentler):
+            st.session_state[f"dlg_bolum_baslangic_{_new_i}"] = str(_bs or "")
+            st.session_state[f"dlg_bolum_bitis_{_new_i}"] = str(_es or "")
+
+    def _build_manual_segments_from_existing(previous_count: int, target_count: int) -> list[tuple[str, str]]:
+        hedef = max(1, int(target_count))
+        onceki = max(0, int(previous_count or 0))
+        korunanlar = _read_segment_text_state(onceki)[:min(onceki, hedef)]
+        kalan = hedef - len(korunanlar)
+        if kalan <= 0:
+            return korunanlar
+
+        son_bitis = 0.0
+        for _bs, _es in reversed(korunanlar):
+            _parsed_end = _parse_mmss(_es)
+            if _parsed_end >= 0:
+                son_bitis = min(max(_parsed_end, 0.0), round(video_suresi, 3))
+                break
+
+        if son_bitis < video_suresi - 0.001:
+            ek_segmentler = []
+            kalan_sure = max(0.0, video_suresi - son_bitis)
+            parca_sure = kalan_sure / kalan if kalan > 0 else 0.0
+            _cursor = son_bitis
+            for _idx in range(kalan):
+                _s = round(_cursor, 3)
+                _e = round(_cursor + parca_sure, 3) if _idx < kalan - 1 else round(video_suresi, 3)
+                _e = min(_e, round(video_suresi, 3))
+                ek_segmentler.append((_format_mmss_ms(_s), _format_mmss_ms(_e)))
+                _cursor = _e
+            return korunanlar + ek_segmentler
+
+        ayni_nokta = _format_mmss_ms(son_bitis)
+        return korunanlar + [(ayni_nokta, ayni_nokta) for _ in range(kalan)]
 
     # ---- Süre Seçenekleri: Otomatik bölme ----
     st.markdown("---")
@@ -9703,71 +13082,82 @@ def video_bolumlerine_ayir_dialog():
             if st.button(f"{_sure_sn}sn", key=f"dlg_otomatik_bol_{_sure_sn}", use_container_width=True):
                 import math as _math
                 _oto_n = _math.ceil(video_suresi / _sure_sn)
-                if _oto_n < 2:
-                    _oto_n = 2
-                # Önce tüm eski key'leri temizle
-                for _old_i in range(50):
-                    for _sfx in ("_baslangic", "_bitis"):
-                        _old_key = f"dlg_bolum{_sfx}_{_old_i}"
-                        if _old_key in st.session_state:
-                            del st.session_state[_old_key]
-                # Yeni değerleri session state'e yaz
+                if _oto_n < 1:
+                    _oto_n = 1
                 _cursor = 0.0
+                _otomatik_segmentler = []
                 for _new_i in range(_oto_n):
-                    _s = round(_cursor, 1)
-                    _e = round(min(_cursor + _sure_sn, video_suresi), 1)
+                    _s = round(_cursor, 3)
+                    _e = round(min(_cursor + _sure_sn, video_suresi), 3)
                     if _new_i == _oto_n - 1:
-                        _e = round(video_suresi, 1)
-                    st.session_state[f"dlg_bolum_baslangic_{_new_i}"] = _format_mmss(_s)
-                    st.session_state[f"dlg_bolum_bitis_{_new_i}"] = _format_mmss(_e)
+                        _e = round(video_suresi, 3)
+                    _otomatik_segmentler.append((_s, _e))
                     _cursor = _e
+                _write_segment_state(_otomatik_segmentler)
                 st.session_state["dlg_bolum_sayisi"] = _oto_n
                 st.session_state["_bolum_sayisi_prev"] = _oto_n
+                st.session_state["_video_bolum_init_token"] = video_source_token
                 st.session_state["_bolum_sure_secim"] = _sure_sn
-                st.rerun()
+                st.rerun(scope="fragment")
 
     # ---- Bölüm sayısı seçimi ----
     st.markdown("---")
+    _pending_widget_updates = st.session_state.pop("_dlg_bolum_pending_updates", None)
+    if isinstance(_pending_widget_updates, dict):
+        for _widget_key, _widget_value in _pending_widget_updates.items():
+            st.session_state[_widget_key] = _widget_value
+
     # İlk açılışta varsayılan değeri session state üzerinden ata (value parametresi yerine)
     if "dlg_bolum_sayisi" not in st.session_state:
         st.session_state["dlg_bolum_sayisi"] = 2
+    st.markdown("**İşlem Şekli:**")
+    bolum_duzen_modu = st.radio(
+        "Bölüm düzenleme modu",
+        options=["Otomatik", "Manuel"],
+        key="video_bolum_duzen_modu",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if bolum_duzen_modu == "Otomatik":
+        st.caption("Otomatik modda bir bölümün bitişini değiştirdiğinizde sonraki bölümler zincirleme güncellenir.")
+    else:
+        st.caption("Manuel modda her bölüm bağımsızdır. Aralarda boşluk bırakabilir, tek bir klip seçebilir ve süreleri serbestçe ayarlayabilirsiniz.")
+    st.caption("İsterseniz önce üstteki otomatik süre düğmelerinden birini kullanıp ardından burada manuel düzeltme yapabilirsiniz.")
+
     bolum_sayisi = st.number_input(
         "Kaç bölüme ayırmak istiyorsunuz?",
-        min_value=2, max_value=50, step=1,
+        min_value=1, max_value=50, step=1,
         key="dlg_bolum_sayisi",
     )
     n = int(bolum_sayisi)
 
-    # Eşit dağıtım hesapla
-    esit_sure = video_suresi / n
-
     # İlk açılış veya bölüm sayısı değişikliğinde session state'e
     # varsayılan değerleri yaz (widget oluşturulmadan ÖNCE)
     _prev_bolum = st.session_state.get("_bolum_sayisi_prev", None)
-    _needs_init = (_prev_bolum is None) or (n != _prev_bolum)
+    _prev_init_token = st.session_state.get("_video_bolum_init_token")
+    _needs_init = (_prev_bolum is None) or (n != _prev_bolum) or (_prev_init_token != video_source_token)
     if _needs_init:
-        # Önce tüm eski key'leri temizle (0..49)
-        for _old_i in range(50):
-            for _sfx in ("_baslangic", "_bitis"):
-                _old_key = f"dlg_bolum{_sfx}_{_old_i}"
-                if _old_key in st.session_state:
-                    del st.session_state[_old_key]
-        # Yeni eşit dağıtım değerlerini session state'e yaz
-        for _new_i in range(n):
-            _s = round(esit_sure * _new_i, 1)
-            _e = round(esit_sure * (_new_i + 1), 1) if _new_i < n - 1 else round(video_suresi, 1)
-            st.session_state[f"dlg_bolum_baslangic_{_new_i}"] = _format_mmss(_s)
-            st.session_state[f"dlg_bolum_bitis_{_new_i}"] = _format_mmss(_e)
+        if (_prev_bolum is None) or (_prev_init_token != video_source_token):
+            _write_segment_state(_build_equal_segments(n))
+        elif bolum_duzen_modu == "Manuel" and n != _prev_bolum:
+            _write_segment_text_state(_build_manual_segments_from_existing(_prev_bolum, n))
+        else:
+            _write_segment_state(_build_equal_segments(n))
         st.session_state["_bolum_sayisi_prev"] = n
+        st.session_state["_video_bolum_init_token"] = video_source_token
         st.session_state.pop("_bolum_sure_secim", None)
         # İlk açılış değilse (bölüm sayısı değişti) rerun yap
-        if _prev_bolum is not None:
-            st.rerun()
+        if _prev_bolum is not None and _prev_init_token == video_source_token:
+            st.rerun(scope="fragment")
     st.session_state["_bolum_sayisi_prev"] = n
+    st.session_state["_video_bolum_init_token"] = video_source_token
 
     st.markdown("---")
     st.markdown("**Bölüm Zaman Aralıklarını Belirleyin (Başlangıç — Bitiş):**")
-    st.caption("Format: M:SS (orn: 1:30) veya saniye (orn: 90). Bir bölümü değiştirdiğinizde sonraki bölümler otomatik güncellenir.")
+    if bolum_duzen_modu == "Otomatik":
+        st.caption("Format: M:SS:mmm (orn: 0:12:350), M:SS.mmm (orn: 0:12.350) veya saniye (orn: 12.350). Bir bölümü değiştirdiğinizde sonraki bölümler otomatik güncellenir.")
+    else:
+        st.caption("Format: M:SS:mmm (orn: 0:12:350), M:SS.mmm (orn: 0:12.350) veya saniye (orn: 12.350). Manuel modda her bölüm bağımsızdır; aralarda boşluk bırakabilir veya videonun sadece istediğiniz kısmını alabilirsiniz.")
 
     # Önce tüm widget'ları oluştur ve değerlerini oku
     segments_raw = []  # [(baslangic_str, bitis_str), ...]
@@ -9778,13 +13168,13 @@ def video_bolumlerine_ayir_dialog():
             baslangic_str = st.text_input(
                 f"Başlangıç",
                 key=f"dlg_bolum_baslangic_{i}",
-                help=f"Bölüm {i+1} başlangıç zamanı (M:SS veya saniye)",
+                help=f"Bölüm {i+1} başlangıç zamanı (M:SS:mmm, M:SS.mmm veya saniye)",
             )
         with col_e:
             bitis_str = st.text_input(
                 f"Bitiş",
                 key=f"dlg_bolum_bitis_{i}",
-                help=f"Bölüm {i+1} bitiş zamanı (M:SS veya saniye)",
+                help=f"Bölüm {i+1} bitiş zamanı (M:SS:mmm, M:SS.mmm veya saniye)",
             )
         segments_raw.append((baslangic_str, bitis_str))
 
@@ -9793,57 +13183,79 @@ def video_bolumlerine_ayir_dialog():
     for bs, es in segments_raw:
         segments_parsed.append((_parse_mmss(bs), _parse_mmss(es)))
 
-    # Otomatik güncelleme: Bir bölümün bitişi değiştirildiğinde
-    # sonraki bölümlerin başlangıç/bitiş değerlerini kalan süreye göre yeniden dağıt
-    _needs_rerun = False
-    for i in range(n - 1):
-        cur_start, cur_end = segments_parsed[i]
-        next_start, next_end = segments_parsed[i + 1]
-        # Eğer mevcut bölümün bitişi geçerliyse ve sonraki bölümün başlangıcı farklıysa
-        if cur_end >= 0 and next_start >= 0 and abs(cur_end - next_start) > 0.05:
-            # Sonraki bölümleri yeniden dağıt
-            kalan_sure = video_suresi - cur_end
-            kalan_bolum = n - (i + 1)
-            if kalan_bolum > 0 and kalan_sure > 0:
-                bolum_basi = kalan_sure / kalan_bolum
-                _cursor = cur_end
-                for j in range(i + 1, n):
-                    _s = round(_cursor, 1)
-                    _e = round(_cursor + bolum_basi, 1) if j < n - 1 else round(video_suresi, 1)
-                    _e = min(_e, round(video_suresi, 1))
-                    st.session_state[f"dlg_bolum_baslangic_{j}"] = _format_mmss(_s)
-                    st.session_state[f"dlg_bolum_bitis_{j}"] = _format_mmss(_e)
-                    _cursor = _e
-                _needs_rerun = True
-            break  # İlk farkı bulduktan sonra dur, rerun yapacak
+    if bolum_duzen_modu == "Otomatik":
+        # Otomatik güncelleme: Bir bölümün bitişi değiştirildiğinde
+        # sonraki bölümlerin başlangıç/bitiş değerlerini kalan süreye göre yeniden dağıt
+        _needs_rerun = False
+        _pending_segment_updates = {}
+        for i in range(n - 1):
+            cur_start, cur_end = segments_parsed[i]
+            next_start, next_end = segments_parsed[i + 1]
+            # Eğer mevcut bölümün bitişi geçerliyse ve sonraki bölümün başlangıcı farklıysa
+            if cur_end >= 0 and next_start >= 0 and abs(cur_end - next_start) > 0.001:
+                # Sonraki bölümleri yeniden dağıt
+                kalan_sure = video_suresi - cur_end
+                kalan_bolum = n - (i + 1)
+                if kalan_bolum > 0 and kalan_sure > 0:
+                    bolum_basi = kalan_sure / kalan_bolum
+                    _cursor = cur_end
+                    for j in range(i + 1, n):
+                        _s = round(_cursor, 3)
+                        _e = round(_cursor + bolum_basi, 3) if j < n - 1 else round(video_suresi, 3)
+                        _e = min(_e, round(video_suresi, 3))
+                        _pending_segment_updates[f"dlg_bolum_baslangic_{j}"] = _format_mmss_ms(_s)
+                        _pending_segment_updates[f"dlg_bolum_bitis_{j}"] = _format_mmss_ms(_e)
+                        _cursor = _e
+                    _needs_rerun = True
+                break  # İlk farkı bulduktan sonra dur, rerun yapacak
 
-    if _needs_rerun:
-        st.rerun()
+        if _needs_rerun:
+            st.session_state["_dlg_bolum_pending_updates"] = _pending_segment_updates
+            st.rerun(scope="fragment")
 
     # Validasyon
     segments_input = []
     has_error = False
     for i, (start_sec, end_sec) in enumerate(segments_parsed):
         if start_sec < 0 or end_sec < 0:
-            st.error(f"Bölüm {i+1}: Geçersiz zaman formatı. M:SS (orn: 1:30) veya saniye (orn: 90) girin.")
+            st.error(f"Bölüm {i+1}: Geçersiz zaman formatı. M:SS:mmm (örn: 0:12:350), M:SS.mmm (örn: 0:12.350) veya saniye (örn: 12.350) girin.")
             has_error = True
             segments_input.append((0, 0))
         elif end_sec <= start_sec:
-            st.error(f"Bölüm {i+1}: Bitiş zamanı ({_format_mmss(end_sec)}) başlangıçtan ({_format_mmss(start_sec)}) büyük olmalıdır.")
+            st.error(f"Bölüm {i+1}: Bitiş zamanı ({_format_mmss_ms(end_sec)}) başlangıçtan ({_format_mmss_ms(start_sec)}) büyük olmalıdır.")
             has_error = True
             segments_input.append((start_sec, end_sec))
-        elif end_sec > video_suresi + 0.5:
-            st.error(f"Bölüm {i+1}: Bitiş zamanı ({_format_mmss(end_sec)}) video süresini ({_format_mmss(video_suresi)}) aşıyor.")
+        elif end_sec > video_suresi + 0.001:
+            st.error(f"Bölüm {i+1}: Bitiş zamanı ({_format_mmss_ms(end_sec)}) video süresini ({_format_mmss_ms(video_suresi)}) aşıyor.")
             has_error = True
             segments_input.append((start_sec, end_sec))
         else:
             segments_input.append((start_sec, min(end_sec, video_suresi)))
 
+    if not has_error and len(segments_input) > 1:
+        for i in range(1, len(segments_input)):
+            onceki_end = segments_input[i - 1][1]
+            simdiki_start = segments_input[i][0]
+            if simdiki_start < onceki_end - 0.001:
+                st.error(
+                    f"Bölüm {i+1}: Başlangıç zamanı ({_format_mmss_ms(simdiki_start)}) "
+                    f"önceki bölümün bitişinden ({_format_mmss_ms(onceki_end)}) küçük olamaz."
+                )
+                has_error = True
+                break
+            if bolum_duzen_modu == "Otomatik" and abs(simdiki_start - onceki_end) > 0.001:
+                st.error(
+                    f"Bölüm {i+1}: Otomatik modda başlangıç zamanı önceki bölümün bitişiyle aynı olmalıdır. "
+                    "Arada boşluk bırakmak için Manuel modu kullanın."
+                )
+                has_error = True
+                break
+
     # Çakışma kontrolü
     if not has_error and len(segments_input) > 1:
         toplam_girilen = sum(max(0, e - s) for s, e in segments_input)
-        if toplam_girilen > video_suresi + 0.5:
-            st.error(f"Toplam: {_format_duration(toplam_girilen)} ({_format_mmss(toplam_girilen)}) — Bölümler çakışıyor veya video süresini aşıyor!")
+        if toplam_girilen > video_suresi + 0.001:
+            st.error(f"Toplam: {_format_duration_ms(toplam_girilen)} ({_format_mmss_ms(toplam_girilen)}) — Bölümler çakışıyor veya video süresini aşıyor!")
             has_error = True
 
     # Toplam süre kontrolü ve bilgi gösterimi
@@ -9853,12 +13265,12 @@ def video_bolumlerine_ayir_dialog():
     st.markdown("---")
     if has_error:
         st.error("Yukarıdaki hataları düzeltin. Hatalar giderilmeden bölme işlemi yapılamaz.")
-    elif abs(fark) < 0.5:
-        st.success(f"Toplam: {_format_duration(toplam_girilen)} ({_format_mmss(toplam_girilen)}) — Video süresiyle uyumlu.")
+    elif abs(fark) < 0.001:
+        st.success(f"Toplam: {_format_duration_ms(toplam_girilen)} ({_format_mmss_ms(toplam_girilen)}) — Video süresiyle uyumlu.")
     elif fark > 0:
-        st.warning(f"Toplam: {_format_duration(toplam_girilen)} ({_format_mmss(toplam_girilen)}) — Kalan {_format_duration(fark)} kapsam dışı kalacak.")
+        st.warning(f"Toplam: {_format_duration_ms(toplam_girilen)} ({_format_mmss_ms(toplam_girilen)}) — Kalan {_format_duration_ms(fark)} kapsam dışı kalacak.")
     else:
-        st.error(f"Toplam: {_format_duration(toplam_girilen)} ({_format_mmss(toplam_girilen)}) — Bölümler çakışıyor veya video süresini aşıyor!")
+        st.error(f"Toplam: {_format_duration_ms(toplam_girilen)} ({_format_mmss_ms(toplam_girilen)}) — Bölümler çakışıyor veya video süresini aşıyor!")
         has_error = True
 
     # Önizleme tablosu - widget'lardan okunan gerçek değerlerle
@@ -9868,9 +13280,9 @@ def video_bolumlerine_ayir_dialog():
         dur = max(0, e_sec - s_sec)
         preview_data.append({
             "Bölüm": f"Video {i + 1}",
-            "Başlangıç": _format_mmss(s_sec),
-            "Bitiş": _format_mmss(e_sec),
-            "Süre": _format_duration(dur),
+            "Başlangıç": _format_mmss_ms(s_sec),
+            "Bitiş": _format_mmss_ms(e_sec),
+            "Süre": _format_duration_ms(dur),
         })
     st.table(preview_data)
 
@@ -9879,7 +13291,8 @@ def video_bolumlerine_ayir_dialog():
         st.markdown('<div class="btn-success">', unsafe_allow_html=True)
         # Hata varsa buton her zaman devre dışı
         bolumle_disabled = has_error
-        if st.button("✂️ Böl ve Kaydet", key="dlg_bolum_kaydet", use_container_width=True, disabled=bolumle_disabled):
+        kaydet_buton_metni = "💾 Bölüm Bilgilerini Kaydet" if is_link_source else "✂️ Böl ve Kaydet"
+        if st.button(kaydet_buton_metni, key="dlg_bolum_kaydet", use_container_width=True, disabled=bolumle_disabled):
             # Çift kontrol: hata varsa kesinlikle çalışmasın
             if has_error:
                 st.error("Hatalar giderilmeden bölme işlemi yapılamaz!")
@@ -9891,6 +13304,40 @@ def video_bolumlerine_ayir_dialog():
                     if not segments:
                         st.error("Geçerli bölüm bulunamadı.")
                     else:
+                        if is_link_source:
+                            plan_payload = {
+                                "kind": "link",
+                                "source_no": source_no,
+                                "url": source_url,
+                                "title": temp_name,
+                                "duration": video_suresi,
+                                "preview_url": st.session_state.get("video_bolum_preview_url", ""),
+                                "segments": segments,
+                                "edit_mode": bolum_duzen_modu,
+                            }
+                            if _upsert_video_bolum_link_plan(plan_payload):
+                                _write_prompt_source_mode(PROMPT_SOURCE_LINK)
+                                set_link_canvas_source("manual")
+                                st.session_state.status["youtube_link"] = "idle"
+                                st.session_state.status["input"] = "ok"
+                                st.session_state["video_ekle_saved_notice"] = (
+                                    f"Link Video {source_no} için {len(segments)} bölümlük plan kaydedildi. "
+                                    "Tümünü Çalıştır'da Video İndir adımı bittikten sonra otomatik kesilecek."
+                                )
+                                st.session_state.video_bolum_temp_path = None
+                                st.session_state.video_bolum_temp_name = None
+                                st.session_state.video_bolum_source_kind = "file"
+                                st.session_state.video_bolum_source_no = None
+                                st.session_state.video_bolum_source_url = ""
+                                st.session_state.video_bolum_source_title = ""
+                                st.session_state.video_bolum_source_duration = 0.0
+                                st.session_state.video_bolum_preview_url = ""
+                                st.session_state.ek_dialog_open = "video_ekle"
+                                st.rerun()
+                            else:
+                                st.error("Bölüm planı kaydedilemedi.")
+                            return
+
                         # Mevcut Eklenen Video klasörünü temizle
                         os.makedirs(hedef_root, exist_ok=True)
                         for name in os.listdir(hedef_root):
@@ -9914,8 +13361,8 @@ def video_bolumlerine_ayir_dialog():
                         for _b_idx, (_b_start, _b_end) in enumerate(segments):
                             video_no = 1 + _b_idx
                             _ilerleme = (_b_idx) / toplam_bolum
-                            _bolum_progress_bar.progress(_ilerleme, text=f"✂️ Bölüm {video_no}/{toplam_bolum} kesiliyor... ({_format_mmss(_b_start)} → {_format_mmss(_b_end)})")
-                            _bolum_status_text.info(f"⏳ Video {video_no} işleniyor: {_format_mmss(_b_start)} - {_format_mmss(_b_end)} ({_format_duration(_b_end - _b_start)})")
+                            _bolum_progress_bar.progress(_ilerleme, text=f"✂️ Bölüm {video_no}/{toplam_bolum} kesiliyor... ({_format_mmss_ms(_b_start)} → {_format_mmss_ms(_b_end)})")
+                            _bolum_status_text.info(f"⏳ Video {video_no} işleniyor: {_format_mmss_ms(_b_start)} - {_format_mmss_ms(_b_end)} ({_format_duration_ms(_b_end - _b_start)})")
 
                             klasor = os.path.join(hedef_root, f"Video {video_no}")
                             os.makedirs(klasor, exist_ok=True)
@@ -9925,9 +13372,9 @@ def video_bolumlerine_ayir_dialog():
                             try:
                                 subprocess.run(
                                     ["ffmpeg", "-y",
-                                     "-ss", str(_b_start),
                                      "-i", temp_path,
-                                     "-t", str(duration),
+                                     "-ss", _format_ffmpeg_seconds(_b_start),
+                                     "-t", _format_ffmpeg_seconds(duration),
                                      "-c:v", "libx264", "-preset", "fast", "-crf", "18",
                                      "-c:a", "aac", "-b:a", "192k",
                                      "-avoid_negative_ts", "make_zero",
@@ -9947,6 +13394,9 @@ def video_bolumlerine_ayir_dialog():
                         if sonuclar:
                             _write_prompt_source_mode(PROMPT_SOURCE_ADDED_VIDEO)
                             set_link_canvas_source("added_video")
+                            clear_placeholder = globals().get("_clear_empty_source_placeholder")
+                            if callable(clear_placeholder):
+                                clear_placeholder()
                             st.session_state.status["youtube_link"] = "idle"
                             st.session_state.status["input"] = "ok"
                             st.session_state["video_bolum_saved_notice"] = (
@@ -9982,6 +13432,12 @@ def video_bolumlerine_ayir_dialog():
                 pass
             st.session_state.video_bolum_temp_path = None
             st.session_state.video_bolum_temp_name = None
+            st.session_state.video_bolum_source_kind = "file"
+            st.session_state.video_bolum_source_no = None
+            st.session_state.video_bolum_source_url = ""
+            st.session_state.video_bolum_source_title = ""
+            st.session_state.video_bolum_source_duration = 0.0
+            st.session_state.video_bolum_preview_url = ""
             st.session_state.ek_dialog_open = "video_ekle"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -9999,8 +13455,237 @@ def gorsel_lightbox_dialog(gorsel_path, gorsel_adi):
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
+def _render_gorsel_analiz_dialog_body():
+    def _normalize_pair_selection(folder_name, available_images):
+        pair_key = f"sel_pair_{folder_name}"
+        valid_images = [name for name in st.session_state.get(pair_key, []) if name in available_images]
+        if valid_images != st.session_state.get(pair_key, []):
+            st.session_state[pair_key] = valid_images[:2]
+        return list(st.session_state.get(pair_key, []))[:2]
+
+    def _toggle_transition_image(folder_name, image_name, available_images):
+        pair_key = f"sel_pair_{folder_name}"
+        current = _normalize_pair_selection(folder_name, available_images)
+        if image_name in current:
+            current = [name for name in current if name != image_name]
+        elif len(current) >= 2:
+            st.session_state["ga_transition_selection_error"] = (
+                "Transition modunda en fazla 2 görsel seçebilirsiniz. "
+                "Önce mevcut seçimlerden birini kaldırın."
+            )
+        else:
+            current.append(image_name)
+        st.session_state[pair_key] = current[:2]
+
+    kaynak_videolar = _list_gorsel_analiz_source_entries()
+    kaynak_etiketi = _get_gorsel_analiz_source_label()
+
+    st.markdown('<div class="btn-success">', unsafe_allow_html=True)
+    if st.button(
+        "📸 Videodan Görsel Çıkart (İşlemi Başlat)",
+        key="dlg_gorsel_analiz_start_transition",
+        use_container_width=True,
+        disabled=st.session_state.get("batch_mode", False) or any_running() or (not kaynak_videolar)
+    ):
+        st.session_state.ek_dialog_open = "gorsel_analiz"
+        st.session_state.single_paused = False
+        st.session_state.single_finish_requested = False
+        st.session_state.single_mode = True
+        st.session_state.bg_last_result = None
+        st.session_state.single_step = "gorsel_analiz"
+        cleanup_flags()
+        st.session_state.status["gorsel_analiz"] = "running"
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    render_dialog_single_controls(step_match="gorsel_analiz", prefix="dlg_gorsel_analiz")
+    st.markdown("---")
+
+    transition_state = _load_transition_ui_state()
+    stored_transition_enabled = bool(transition_state.get("gorsel_analiz_transition_enabled", False))
+    ga_transition_enabled = st.checkbox(
+        "Start End Frame (Transition)",
+        value=stored_transition_enabled,
+        key="ga_transition_toggle",
+        help="Açıkken iki kare seçip bunları start.png ve end.png olarak kaydedebilirsiniz.",
+    )
+    if ga_transition_enabled != stored_transition_enabled:
+        _save_transition_ui_state({"gorsel_analiz_transition_enabled": ga_transition_enabled})
+
+    if ga_transition_enabled:
+        st.caption(
+            "Transition modunda iki kare seçin. Kaydet dediğinizde klasörde yalnızca "
+            "start.png ve end.png kalır."
+        )
+
+    selection_error = st.session_state.pop("ga_transition_selection_error", "")
+    if selection_error:
+        st.warning(selection_error)
+
+    klasorler = get_gorsel_analiz_klasorleri()
+    if not klasorler:
+        if not kaynak_videolar:
+            st.warning(f"{kaynak_etiketi} kaynağında işlenecek video bulunamadı.")
+        else:
+            st.info("Henüz kaydedilmiş Görsel Analiz çıktısı bulunamadı.")
+        st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+        if st.button("⬅️ Geri", key="ga_back_empty", use_container_width=True):
+            st.session_state.ek_dialog_open = "menu"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    selected_folder_state = st.session_state.get("gorsel_analiz_klasor_sec")
+    if selected_folder_state not in klasorler:
+        st.session_state.gorsel_analiz_klasor_sec = klasorler[0]
+
+    selected_folder = st.selectbox(
+        "Klasör Seçin:",
+        options=klasorler,
+        index=klasorler.index(st.session_state.get("gorsel_analiz_klasor_sec")),
+        key="ga_folder_select",
+    )
+    st.session_state.gorsel_analiz_klasor_sec = selected_folder
+
+    images = get_klasor_gorselleri(selected_folder)
+    if not images:
+        st.warning("Seçilen klasörde görsel bulunamadı.")
+        st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+        if st.button("⬅️ Geri", key="ga_back_no_images", use_container_width=True):
+            st.session_state.ek_dialog_open = "menu"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+        return
+
+    single_key = f"sel_{selected_folder}"
+    pair_key = f"sel_pair_{selected_folder}"
+
+    current_single = st.session_state.get(single_key)
+    if current_single not in images:
+        preferred_single = "start.png" if "start.png" in images else images[0]
+        st.session_state[single_key] = preferred_single
+
+    current_pair = _normalize_pair_selection(selected_folder, images)
+    if not current_pair:
+        default_pair = []
+        if "start.png" in images:
+            default_pair.append("start.png")
+        if "end.png" in images:
+            default_pair.append("end.png")
+        if len(default_pair) < 2:
+            for image_name in images:
+                if image_name not in default_pair:
+                    default_pair.append(image_name)
+                if len(default_pair) == 2:
+                    break
+        st.session_state[pair_key] = default_pair[:2]
+        current_pair = list(st.session_state[pair_key])
+
+    if ga_transition_enabled and len(images) < 2:
+        st.warning("Transition modu için aynı klasörde en az 2 görsel gerekli.")
+
+    cols_per_row = 4
+    for row_start in range(0, len(images), cols_per_row):
+        row_images = images[row_start:row_start + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for i, image_name in enumerate(row_images):
+            with cols[i]:
+                image_path = os.path.join(
+                    st.session_state.settings.get("gorsel_analiz_dir", ""),
+                    selected_folder,
+                    image_name,
+                )
+                try:
+                    st.image(image_path, use_container_width=True)
+                except Exception:
+                    st.text(image_name)
+
+                preview_col, select_col = st.columns(2)
+                with preview_col:
+                    if st.button("🔍", key=f"ga_zoom_{selected_folder}_{image_name}", use_container_width=True):
+                        st.session_state.lightbox_gorsel = {"path": image_path, "adi": image_name}
+                        st.session_state._ek_dialog_return = "gorsel_analiz"
+                        _request_ek_dialog_open("gorsel_analiz")
+                        st.rerun()
+                with select_col:
+                    if ga_transition_enabled:
+                        current_pair = _normalize_pair_selection(selected_folder, images)
+                        if image_name in current_pair:
+                            pair_index = current_pair.index(image_name)
+                            button_label = "Start" if pair_index == 0 else "End"
+                        else:
+                            button_label = "Seç"
+                        if st.button(
+                            button_label,
+                            key=f"ga_pair_{selected_folder}_{image_name}",
+                            use_container_width=True,
+                        ):
+                            _toggle_transition_image(selected_folder, image_name, images)
+                            _request_ek_dialog_open("gorsel_analiz")
+                            st.rerun()
+                    else:
+                        button_label = "✅" if st.session_state.get(single_key) == image_name else "☐"
+                        if st.button(
+                            button_label,
+                            key=f"ga_single_{selected_folder}_{image_name}",
+                            use_container_width=True,
+                        ):
+                            st.session_state[single_key] = image_name
+                            _request_ek_dialog_open("gorsel_analiz")
+                            st.rerun()
+
+    if ga_transition_enabled:
+        current_pair = _normalize_pair_selection(selected_folder, images)
+        start_label = current_pair[0] if len(current_pair) >= 1 else "-"
+        end_label = current_pair[1] if len(current_pair) >= 2 else "-"
+        st.caption(f"Seçili kareler: Start = {start_label} | End = {end_label}")
+    else:
+        st.caption(f"Seçili görsel: {st.session_state.get(single_key, '-')}")
+
+    save_col, back_col = st.columns(2)
+    with save_col:
+        st.markdown('<div class="btn-success">', unsafe_allow_html=True)
+        save_label = "💾 Start/End Olarak Kaydet" if ga_transition_enabled else "💾 Kaydet (Diğerlerini Sil)"
+        if st.button(save_label, key="ga_save_selection", use_container_width=True):
+            if ga_transition_enabled:
+                current_pair = _normalize_pair_selection(selected_folder, images)
+                if len(current_pair) != 2:
+                    st.error("Transition modu için tam 2 görsel seçmelisiniz.")
+                elif current_pair[0] == current_pair[1]:
+                    st.error("Start ve End için farklı görseller seçin.")
+                else:
+                    ok = gorsel_secimini_transition_olarak_kaydet(
+                        selected_folder,
+                        current_pair[0],
+                        current_pair[1],
+                    )
+                    if ok:
+                        st.session_state[pair_key] = ["start.png", "end.png"]
+                        st.session_state[single_key] = "start.png"
+                        _request_ek_dialog_open("gorsel_analiz")
+                        st.rerun()
+                    st.error("Start/End frame kaydedilemedi.")
+            else:
+                selected_image = st.session_state.get(single_key)
+                if not selected_image:
+                    st.error("Lütfen bir görsel seçin.")
+                else:
+                    ok = gorsel_sec_ve_diger_sil(selected_folder, selected_image)
+                    if ok:
+                        _request_ek_dialog_open("gorsel_analiz")
+                        st.rerun()
+                    st.error("Görsel kaydı sırasında bir hata oluştu.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    with back_col:
+        st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+        if st.button("⬅️ Geri", key="ga_back_main", use_container_width=True):
+            st.session_state.ek_dialog_open = "menu"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
 @st.dialog("🖼️ Görsel Analiz", width="large")
 def gorsel_analiz_dialog():
+    return _render_gorsel_analiz_dialog_body()
     kaynak_videolar = _list_gorsel_analiz_source_entries()
     kaynak_etiketi = _get_gorsel_analiz_source_label()
 
@@ -10025,16 +13710,38 @@ def gorsel_analiz_dialog():
     render_dialog_single_controls(step_match="gorsel_analiz", prefix="dlg_gorsel_analiz")
     st.markdown("---")
 
+    transition_state = _load_transition_ui_state()
+    ga_transition_enabled = st.checkbox(
+        "Start End Frame (Transition)",
+        value=bool(transition_state.get("gorsel_analiz_transition_enabled", False)),
+        key="ga_transition_toggle",
+        help="Açıkken iki kare seçip bunları start.png ve end.png olarak kaydedebilirsiniz.",
+    )
+    if ga_transition_enabled != bool(transition_state.get("gorsel_analiz_transition_enabled", False)):
+        _save_transition_ui_state({"gorsel_analiz_transition_enabled": ga_transition_enabled})
+    if ga_transition_enabled:
+        st.caption("Transition modunda tam 2 görsel seçin. Kaydet dediğinizde klasörde yalnızca start.png ve end.png kalır.")
+
     klasorler = get_gorsel_analiz_klasorleri()
     if klasorler:
-        idx = klasorler.index(st.session_state.get("gorsel_analiz_klasor_sec")) if st.session_state.get("gorsel_analiz_klasor_sec") in klasorler else 0
+        if st.session_state.get("gorsel_analiz_klasor_sec") not in klasorler:
+            st.session_state.gorsel_analiz_klasor_sec = klasorler[0]
+        idx = klasorler.index(st.session_state.get("gorsel_analiz_klasor_sec"))
         secilen = st.selectbox("Klasör Seçin:", options=klasorler, index=idx)
         if secilen:
             st.session_state.gorsel_analiz_klasor_sec = secilen
             gorseller = get_klasor_gorselleri(secilen)
             if gorseller:
                 sel_key = f"sel_{secilen}"
+                pair_key = f"sel_pair_{secilen}"
                 if sel_key not in st.session_state: st.session_state[sel_key] = gorseller[0]
+                if pair_key not in st.session_state:
+                    varsayilan_pair = []
+                    if "start.png" in gorseller:
+                        varsayilan_pair.append("start.png")
+                    if "end.png" in gorseller:
+                        varsayilan_pair.append("end.png")
+                    st.session_state[pair_key] = varsayilan_pair[:2]
                 cols_per_row = 4
                 for r in range(0, len(gorseller), cols_per_row):
                     row_gorseller = gorseller[r:r+cols_per_row]
@@ -10050,14 +13757,16 @@ def gorsel_analiz_dialog():
                                     st.session_state.lightbox_gorsel = {"path": g_yol, "adi": g_adi}; st.session_state._ek_dialog_return = "gorsel_analiz"; st.rerun()
                             with b2:
                                 if st.button("✅" if st.session_state.get(sel_key) == g_adi else "☐", key=f"sl_{secilen}_{g_adi}"):
-                                    st.session_state[sel_key] = g_adi; st.rerun()
+                                    st.session_state[sel_key] = g_adi
+                                    _request_ek_dialog_open("gorsel_analiz")
+                                    st.rerun()
                 c1, c2 = st.columns(2)
                 with c1:
                     st.markdown('<div class="btn-success">', unsafe_allow_html=True)
                     if st.button("💾 Kaydet (Diğerlerini Sil)", use_container_width=True):
                         if st.session_state.get(sel_key): 
                             gorsel_sec_ve_diger_sil(secilen, st.session_state[sel_key])
-                            st.session_state.ek_dialog_open = "gorsel_analiz"
+                            _request_ek_dialog_open("gorsel_analiz")
                             st.rerun()
                     st.markdown('</div>', unsafe_allow_html=True)
                 with c2:
@@ -10073,6 +13782,7 @@ def gorsel_analiz_dialog():
 
 @st.dialog("🎨 Görsel Klonla", width="large")
 def gorsel_klonla_dialog():
+    _apply_pending_gklonla_form_ui_state()
     gorsel_analiz_dir  = st.session_state.settings.get("gorsel_analiz_dir", "")
     gorsel_olustur_dir = st.session_state.settings.get("gorsel_olustur_dir", "")
     links_file         = st.session_state.settings.get("links_file", "")
@@ -10144,6 +13854,19 @@ def gorsel_klonla_dialog():
         st.session_state.ek_dialog_open = "gorsel_klonla"
         st.rerun()
 
+    transition_state = _load_transition_ui_state()
+    stored_clone_transition = bool(transition_state.get("gorsel_klonla_transition_enabled", False))
+    clone_transition_enabled = st.checkbox(
+        "Start End Frame (Transition)",
+        value=stored_clone_transition,
+        key="gklonla_transition_toggle",
+        help="Açıkken kaynak klasörde start.png ve end.png varsa ikisi de aynı prompt ile klonlanır.",
+    )
+    if clone_transition_enabled != stored_clone_transition:
+        _save_transition_ui_state({"gorsel_klonla_transition_enabled": clone_transition_enabled})
+    if clone_transition_enabled:
+        st.caption("Transition modunda kaynak klasördeki start.png ve end.png birlikte işlenir ve çıktı klasörüne aynı adlarla kaydedilir.")
+
     # Seçime göre aktif dizin ve klasörler
     if yeni_kaynak == "gorsel_olustur":
         aktif_dir = gorsel_olustur_dir
@@ -10185,7 +13908,13 @@ def gorsel_klonla_dialog():
         duzelt_inputs = {}
 
         # Doluluk özeti
-        dolu = sum(1 for i in range(1, efektif_sayisi+1) if mevcut_data.get(i, "").strip())
+        dolu = sum(
+            1 for i in range(1, efektif_sayisi + 1)
+            if _gorsel_klon_prompt_has_value(
+                mevcut_data.get(i, ""),
+                require_transition_pair=clone_transition_enabled,
+            )
+        )
         bos  = efektif_sayisi - dolu
         renk = "limegreen" if bos == 0 else ("orange" if dolu > 0 else "tomato")
         kaynak_etiketi = "Görsel Oluştur" if yeni_kaynak == "gorsel_olustur" else "Görsel Analiz"
@@ -10201,40 +13930,141 @@ def gorsel_klonla_dialog():
         st.markdown(
             '<div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);'
             'border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:rgba(255,255,255,0.75);">'
-            '💡 <b>Referans Görsel (isteğe bağlı):</b> Her görsel için bir referans görsel yükleyebilirsiniz. '
-            'Örneğin <em>"1. Görseldeki karakteri 2. Görseldeki karakterle değiştir"</em> gibi bir istemle '
-            'hem ana görsel hem referans görsel birlikte modele gönderilir.'
+            '💡 <b>Referans Görsel (isteğe bağlı):</b> Her görsel için bir veya birden fazla referans görsel '
+            'yükleyebilirsiniz. Yüklediğiniz referanslar tek bir birleşik referans görsele dönüştürülüp modele '
+            'gönderilir. Örneğin <em>"1. Görseldeki karakteri 2. Görseldeki karakterle değiştir"</em> gibi bir '
+            'istemle hem ana görsel hem referans paneli birlikte kullanılabilir.'
             '</div>',
             unsafe_allow_html=True
         )
+
+        def _render_gklonla_reference_editor(gorsel_no: int, frame_name: str | None = None):
+            slot = _normalize_gorsel_referans_slot(frame_name)
+            slot_suffix = f"_{slot}" if slot else ""
+            slot_label = "Start" if slot == "start" else "End" if slot == "end" else "Referans"
+            mevcut_ref_yollari = [yol for yol in gorsel_referans_yollari(gorsel_no, slot) if os.path.isfile(yol)]
+            mevcut_ref_yol = mevcut_ref_yollari[0] if mevcut_ref_yollari else ""
+            ref_var = bool(mevcut_ref_yollari)
+
+            ref_col_up, ref_col_prev = st.columns([0.65, 0.35])
+            with ref_col_up:
+                ref_up = st.file_uploader(
+                    f"📎 #{gorsel_no} {slot_label} Referans Görsel(ler)",
+                    type=["jpg", "jpeg", "png", "bmp", "webp"],
+                    key=f"ref_up{slot_suffix}_{gorsel_no}",
+                    accept_multiple_files=True,
+                    label_visibility="collapsed",
+                    help="Bir veya birden fazla referans görsel yükleyin; sistem bunları tek bir referans paneline dönüştürür.",
+                )
+                if ref_up:
+                    gorsel_referans_kaydet(gorsel_no, ref_up, slot)
+                    st.session_state[f"ref_saved{slot_suffix}_{gorsel_no}"] = True
+                    mevcut_ref_yollari = [yol for yol in gorsel_referans_yollari(gorsel_no, slot) if os.path.isfile(yol)]
+                    mevcut_ref_yol = mevcut_ref_yollari[0] if mevcut_ref_yollari else ""
+                    ref_var = bool(mevcut_ref_yollari)
+                _ref_label = f"📎 {slot_label} Referans #{gorsel_no}" if slot else f"📎 Referans #{gorsel_no}"
+                if ref_var:
+                    if len(mevcut_ref_yollari) == 1:
+                        _ref_label += " ✅"
+                    else:
+                        _ref_label += f" ✅ ({len(mevcut_ref_yollari)} görsel)"
+                st.caption(_ref_label)
+            with ref_col_prev:
+                if ref_var:
+                    try:
+                        if len(mevcut_ref_yollari) == 1:
+                            st.image(mevcut_ref_yol, use_container_width=True)
+                        else:
+                            st.image(mevcut_ref_yollari[:4], width=82)
+                            st.caption(f"{len(mevcut_ref_yollari)} referans görsel yüklü")
+                            if len(mevcut_ref_yollari) > 4:
+                                st.caption(f"+{len(mevcut_ref_yollari) - 4} görsel daha")
+                    except Exception:
+                        st.caption("📷 ref")
+                    if st.button(
+                        "🗑️",
+                        key=f"ref_sil{slot_suffix}_{gorsel_no}",
+                        help="Referans görselleri sil",
+                    ):
+                        gorsel_referans_sil(gorsel_no, slot)
+                        st.session_state["gklonla_pending_form_ui"] = {
+                            "targets": [gorsel_no],
+                            "clear_ref_keys": True,
+                        }
+                        st.session_state.ek_dialog_open = "gorsel_klonla"
+                        st.rerun()
+                else:
+                    st.caption("Referans yok")
 
         for i in range(1, efektif_sayisi + 1):
             # Thumbnail: aktif kaynaktan klasör varsa göster
             klasor_adi = klasorler[i-1] if i-1 < len(klasorler) else None
             gorsel_yol = None
+            gorsel_yollari = []
+            transition_pair_found = False
             if klasor_adi:
+                klasor_yolu = os.path.join(aktif_dir, klasor_adi) if aktif_dir else ""
                 gorseller = [
-                    f for f in sorted(os.listdir(os.path.join(aktif_dir, klasor_adi)))
+                    f for f in sorted(os.listdir(klasor_yolu))
                     if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"))
-                ] if aktif_dir and os.path.isdir(os.path.join(aktif_dir, klasor_adi)) else []
+                ] if klasor_yolu and os.path.isdir(klasor_yolu) else []
+                if clone_transition_enabled and klasor_yolu and os.path.isdir(klasor_yolu):
+                    start_path, end_path = resolve_transition_pair(klasor_yolu)
+                    if start_path and end_path:
+                        gorsel_yollari = [str(start_path), str(end_path)]
+                        gorsel_yol = str(start_path)
+                        transition_pair_found = True
                 if gorseller:
-                    sel_key  = f"sel_{klasor_adi}"
+                    sel_key = f"sel_{klasor_adi}"
                     secili_g = st.session_state.get(sel_key, gorseller[0])
-                    gorsel_yol = os.path.join(aktif_dir, klasor_adi, secili_g)
+                    if not gorsel_yollari:
+                        gorsel_yol = os.path.join(aktif_dir, klasor_adi, secili_g)
+                        gorsel_yollari = [gorsel_yol]
 
-            mevcut_deger  = mevcut_data.get(i, "")
-            doluluk_icon  = "✅" if mevcut_deger.strip() else "⬜"
-            etiket        = klasor_adi if klasor_adi else f"Görsel {i}"
+            mevcut_deger = _normalize_gorsel_klon_prompt_entry(mevcut_data.get(i, ""))
+            doluluk_icon = "✅" if _gorsel_klon_prompt_has_value(
+                mevcut_deger,
+                require_transition_pair=clone_transition_enabled and transition_pair_found,
+            ) else "⬜"
+            etiket = klasor_adi if klasor_adi else f"Görsel {i}"
+            if transition_pair_found:
+                etiket = f"{etiket} (Start + End)"
 
-            # Mevcut referans görsel yolunu kontrol et
-            mevcut_ref_yol = gorsel_referans_yolu(i)
-            ref_var = bool(mevcut_ref_yol and os.path.isfile(mevcut_ref_yol))
-
-            if gorsel_yol and os.path.isfile(gorsel_yol):
+            if transition_pair_found and len(gorsel_yollari) >= 2:
+                duzelt_inputs[i] = {}
+                for frame_name, frame_path in (("start", gorsel_yollari[0]), ("end", gorsel_yollari[1])):
+                    frame_label = "Start Frame" if frame_name == "start" else "End Frame"
+                    frame_value = _gorsel_klon_prompt_frame_value(mevcut_deger, frame_name)
+                    frame_icon = "✅" if bool(str(frame_value or "").strip()) else "⬜"
+                    col_img, col_inp = st.columns([0.18, 0.82])
+                    with col_img:
+                        try:
+                            st.image(frame_path, use_container_width=True)
+                        except Exception:
+                            st.caption("📷")
+                    with col_inp:
+                        st.markdown(
+                            f'<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:2px;">'
+                            f'{frame_icon} <b>#{i}</b> — {etiket} / {frame_label}</div>',
+                            unsafe_allow_html=True
+                        )
+                        duzelt_inputs[i][frame_name] = st.text_input(
+                            label=f"#{i} {frame_label}",
+                            value=frame_value,
+                            placeholder=f"{frame_label} için düzeltme",
+                            key=f"dzt_{frame_name}_{i}",
+                            label_visibility="collapsed",
+                        )
+                        _render_gklonla_reference_editor(i, frame_name)
+                    if frame_name == "start":
+                        st.markdown('<hr style="margin:6px 0;border-color:rgba(255,255,255,0.05);">', unsafe_allow_html=True)
+            elif gorsel_yollari:
                 col_img, col_inp = st.columns([0.18, 0.82])
                 with col_img:
-                    try: st.image(gorsel_yol, use_container_width=True)
-                    except: st.caption("📷")
+                    try:
+                        st.image(gorsel_yollari[0], use_container_width=True)
+                    except Exception:
+                        st.caption("📷")
                 with col_inp:
                     st.markdown(
                         f'<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:2px;">'
@@ -10242,39 +14072,13 @@ def gorsel_klonla_dialog():
                         unsafe_allow_html=True
                     )
                     duzelt_inputs[i] = st.text_input(
-                        label=f"#{i}", value=mevcut_deger,
+                        label=f"#{i}",
+                        value=_gorsel_klon_prompt_frame_value(mevcut_deger, ""),
                         placeholder="Örn: Kadın yerine adam olarak değiştir",
-                        key=f"dzt_{i}", label_visibility="collapsed"
+                        key=f"dzt_{i}",
+                        label_visibility="collapsed",
                     )
-                    # Referans görsel satırı
-                    ref_col_up, ref_col_prev = st.columns([0.65, 0.35])
-                    with ref_col_up:
-                        ref_up = st.file_uploader(
-                            f"📎 #{i} Referans Görsel",
-                            type=["jpg", "jpeg", "png", "bmp", "webp"],
-                            key=f"ref_up_{i}",
-                            label_visibility="collapsed",
-                            help="Bu görsel değişiklik için referans olarak kullanılır (isteğe bağlı)"
-                        )
-                        if ref_up is not None:
-                            gorsel_referans_kaydet(i, ref_up)
-                            st.session_state[f"ref_saved_{i}"] = True
-                        _ref_label = f"📎 Referans #{i}"
-                        if ref_var:
-                            _ref_label += " ✅"
-                        st.caption(_ref_label)
-                    with ref_col_prev:
-                        if ref_var:
-                            try:
-                                st.image(mevcut_ref_yol, use_container_width=True)
-                            except Exception:
-                                st.caption("📷 ref")
-                            if st.button("🗑️", key=f"ref_sil_{i}",
-                                         help="Referans görseli sil"):
-                                gorsel_referans_sil(i)
-                                st.rerun()
-                        else:
-                            st.caption("Referans yok")
+                    _render_gklonla_reference_editor(i)
             else:
                 st.markdown(
                     f'<div style="font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:2px;">'
@@ -10282,39 +14086,11 @@ def gorsel_klonla_dialog():
                     unsafe_allow_html=True
                 )
                 duzelt_inputs[i] = st.text_input(
-                    label=f"#{i}", value=mevcut_deger,
+                    label=f"#{i}", value=_gorsel_klon_prompt_frame_value(mevcut_deger, ""),
                     placeholder="Örn: Kadın yerine adam olarak değiştir",
                     key=f"dzt_{i}", label_visibility="collapsed"
                 )
-                # Referans görsel satırı (thumbnail olmayan durum)
-                ref_col_up, ref_col_prev = st.columns([0.65, 0.35])
-                with ref_col_up:
-                    ref_up = st.file_uploader(
-                        f"📎 #{i} Referans Görsel",
-                        type=["jpg", "jpeg", "png", "bmp", "webp"],
-                        key=f"ref_up_{i}",
-                        label_visibility="collapsed",
-                        help="Bu görsel değişiklik için referans olarak kullanılır (isteğe bağlı)"
-                    )
-                    if ref_up is not None:
-                        gorsel_referans_kaydet(i, ref_up)
-                        st.session_state[f"ref_saved_{i}"] = True
-                    _ref_label = f"📎 Referans #{i}"
-                    if ref_var:
-                        _ref_label += " ✅"
-                    st.caption(_ref_label)
-                with ref_col_prev:
-                    if ref_var:
-                        try:
-                            st.image(mevcut_ref_yol, use_container_width=True)
-                        except Exception:
-                            st.caption("📷 ref")
-                        if st.button("🗑️", key=f"ref_sil_{i}",
-                                     help="Referans görseli sil"):
-                            gorsel_referans_sil(i)
-                            st.rerun()
-                    else:
-                        st.caption("Referans yok")
+                _render_gklonla_reference_editor(i)
             st.markdown('<hr style="margin:6px 0;border-color:rgba(255,255,255,0.07);">', unsafe_allow_html=True)
 
         st.markdown("---")
@@ -10322,7 +14098,15 @@ def gorsel_klonla_dialog():
         with c1:
             st.markdown('<div class="btn-success">', unsafe_allow_html=True)
             if st.button("💾 Kaydet", use_container_width=True):
-                kaydet_data = {no: (v or "").strip() for no, v in duzelt_inputs.items()}
+                kaydet_data = {}
+                for no, value in duzelt_inputs.items():
+                    if isinstance(value, dict):
+                        kaydet_data[no] = {
+                            "start": str(value.get("start") or "").strip(),
+                            "end": str(value.get("end") or "").strip(),
+                        }
+                    else:
+                        kaydet_data[no] = str(value or "").strip()
                 gorsel_kaydet_ok = gorsel_duzelt_kaydet(kaydet_data)
                 prompta_aktar_ok = gorsel_klonlama_notlarini_prompta_aktar(kaydet_data) if gorsel_kaydet_ok else False
                 st.session_state.g_saved = bool(gorsel_kaydet_ok)
@@ -10336,8 +14120,13 @@ def gorsel_klonla_dialog():
             if st.button("🗑️ Temizle", use_container_width=True):
                 gorsel_duzelt_sil()
                 gorsel_referans_tumunu_sil()
+                st.session_state["gklonla_pending_form_ui"] = {
+                    "clear_text_keys": True,
+                    "clear_ref_keys": True,
+                }
                 st.session_state.g_saved = False
                 st.session_state.pop("gklonla_saved", None)
+                st.session_state.pop("gklonla_prompt_sync_ok", None)
                 st.session_state.ek_dialog_open = "gorsel_klonla"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
@@ -10525,13 +14314,6 @@ def sosyal_medya_dialog():
     if "sm_ayar_modu" not in st.session_state:
         st.session_state["sm_ayar_modu"] = "Video/Link Bazlı" if cfg.get("mode") == "per_item" else "Genel"
 
-    if st.session_state.get("sm_saved_notice"):
-        _sm_ph = st.empty()
-        _sm_ph.success("Kaydedildi! Tümünü Çalıştır sırasında Sosyal Medya Paylaşım bu ayarla çalışacak.")
-        time.sleep(2.2)
-        _sm_ph.empty()
-        st.session_state.pop("sm_saved_notice", None)
-
     if st.session_state.get("sm_error_notice"):
         st.error(st.session_state.get("sm_error_notice"))
 
@@ -10590,15 +14372,16 @@ def sosyal_medya_dialog():
 
         prev_select_all = bool(st.session_state.get("sm_select_all_accounts_prev", False))
         if bool(select_all) != prev_select_all:
-            for row in rows:
+            for idx, row in enumerate(rows, start=1):
                 row["selected"] = bool(select_all)
+                st.session_state[f"sm_account_selected_{idx}"] = bool(select_all)
             st.session_state["sm_select_all_accounts_prev"] = bool(select_all)
 
         st.markdown(
             "<div style='background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:12px 14px;margin:8px 0 14px 0;line-height:1.6;'>"
             "İlk satırdaki hesap <b>Tek Hesap</b> modunda kullanılacak hesaptır. "
-            "Toplu paylaşımda <b>seçili hesaplarda</b> her video ayrı ayrı paylaşılır. "
-            "<b>Hesap döngüsü</b> açılırsa videolar seçili hesaplara sırayla dağıtılır. "
+            "Toplu paylaşımda varsayılan davranış videoları <b>seçili hesaplara sırayla dağıtmaktır</b>. "
+            "İsterseniz bu davranışı kapatıp <b>her videoyu tüm seçili hesaplarda</b> ayrı ayrı paylaşabilirsiniz. "
             "Hiç hesap seçmeden kaydederseniz tüm geçerli hesaplar kullanılır."
             "</div>",
             unsafe_allow_html=True,
@@ -10634,15 +14417,17 @@ def sosyal_medya_dialog():
         rows = updated_rows
         st.session_state["sm_accounts_rows"] = rows
         hesap_loop = st.checkbox(
-            "Videoları hesaplar arasında sırayla dağıt (döngü)",
+            "Videoları hesaplar arasında sırayla dağıt (önerilen)",
             key="sm_hesap_dongu",
-            help="Kapalıysa her video seçili tüm hesaplarda paylaşılır. Açıkysa videolar seçili hesaplara sırayla dağıtılır.",
+            help="Açıkken videolar seçili hesaplara sırayla dağıtılır. Kapalıysa her seçili video tüm seçili hesaplarda paylaşılır.",
         )
         aktif_hesaplar, invalid_rows = _sm_collect_accounts_from_rows()
         if invalid_rows:
             st.warning(f"Eksik bilgi olan hesap satırları: {', '.join(str(x) for x in invalid_rows)}. API Token girilmeli.")
         secili_hesap_sayisi = sum(1 for h in aktif_hesaplar if h.get("selected", True))
         toplam_hesap_sayisi = len(aktif_hesaplar)
+        if not hesap_loop and secili_hesap_sayisi > 1:
+            st.warning(f"Fan-out modu açık: seçili her video {secili_hesap_sayisi} hesapta ayrı ayrı paylaşılacak.")
         if secili_hesap_sayisi == toplam_hesap_sayisi:
             if hesap_loop:
                 st.caption(f"Kaydedilecek geçerli hesap sayısı: {toplam_hesap_sayisi} (tümü seçili — videolar sırayla dağıtılacak)")
@@ -10743,7 +14528,7 @@ def sosyal_medya_dialog():
     else:
         # --- Kaynak Seçimi ---
         st.markdown("### 📂 Video Kaynağı Seçimi")
-        st.caption("Kaynağı ayrı ayrı seçin: Link, Video, 🖼️ Görsel Oluştur, 🎞️ Video Ekle, 🎬 Toplu Video Montaj veya 🎞️ Video Montaj. Böylece tüm video türlerinin ayarları birbirine karışmaz.")
+        st.caption("Kaynağı ayrı ayrı seçin: Link, Video, 🎬 Klon Video, 🖼️ Görsel Oluştur, 🎞️ Video Ekle, 🎬 Toplu Video Montaj veya 🎞️ Video Montaj. Böylece tüm video türlerinin ayarları birbirine karışmaz.")
 
         # Kaynak seçimini dosyadan başlatma (ilk açılışta)
         _kaynak_secim_path = sosyal_medya_yol_bilgisi().get("kaynak_secim", "")
@@ -10757,7 +14542,7 @@ def sosyal_medya_dialog():
                     pass
             st.session_state["sm_video_kaynak_secim_loaded"] = True
 
-        _kaynak_secenekler = ["Link", "Video", "🖼️ Görsel Oluştur", "🎞️ Video Ekle", "🎬 Toplu Video Montaj", "🎞️ Video Montaj"]
+        _kaynak_secenekler = ["Link", "Video", "🎬 Klon Video", "🖼️ Görsel Oluştur", "🎞️ Video Ekle", "🎬 Toplu Video Montaj", "🎞️ Video Montaj"]
         _mevcut_kaynak = _sm_normalize_kaynak_secim(st.session_state.get("sm_video_kaynak_secim", "Link"))
         if _mevcut_kaynak not in _kaynak_secenekler:
             _mevcut_kaynak = "Link"
@@ -10781,6 +14566,12 @@ def sosyal_medya_dialog():
             _kaynak_aciklama = "Toplu Video Montaj çıktı klasöründeki mevcut videolar veya kaydedilen preset ile üretilecek video sayısı baz alınıyor."
             if not aktif_video_numaralari:
                 st.info("Toplu Video Montaj çıktı klasöründe video bulunamadı ve kayıtlı preset de yok. Önce 🎬 Toplu Video Montaj bölümünden ayarları kaydedin.")
+        elif kaynak_secim == "🎬 Klon Video":
+            aktif_video_numaralari = sosyal_medya_klon_video_numaralari()
+            _kaynak_bilgi_etiketi = "🎬 Klon Video"
+            _kaynak_aciklama = "Video Klonla ekranında kaydettiğiniz görevlerden üretilecek klon videolar baz alınıyor."
+            if not aktif_video_numaralari:
+                st.info("Klon Video klasöründe video bulunamadı ve kayıtlı Klon Video görevi de yok. Önce 🎬 Video Klonla bölümünden ayarları kaydedin.")
         elif kaynak_secim == "🖼️ Görsel Oluştur":
             aktif_video_numaralari = sosyal_medya_gorsel_olustur_numaralari()
             _kaynak_bilgi_etiketi = "🖼️ Görsel Oluştur"
@@ -10873,6 +14664,9 @@ def sosyal_medya_dialog():
 
                 if kaynak_secim == "🎬 Toplu Video Montaj":
                     kaynak_etiketi = "🎬 Toplu Video Montaj"
+                    oge_etiketi_i = "Video"
+                elif kaynak_secim == "🎬 Klon Video":
+                    kaynak_etiketi = "🎬 Klon Video"
                     oge_etiketi_i = "Video"
                 elif kaynak_secim == "🖼️ Görsel Oluştur":
                     kaynak_etiketi = "🖼️ Görsel Oluştur"
@@ -11050,7 +14844,7 @@ def sosyal_medya_dialog():
             _sm_schedule_account_ui_reset(
                 rows=mevcut_hesap_satirlari,
                 hesap_modu=st.session_state.get("sm_hesap_modu", "Tek Hesap"),
-                hesap_dongu=bool(st.session_state.get("sm_hesap_dongu", False)),
+                hesap_dongu=True,
                 select_all=True,  # Temizle: tüm hesaplar seçili olarak sıfırlanır
                 single_token=st.session_state.get("sm_single_token", ""),
             )
@@ -11077,6 +14871,49 @@ def sosyal_medya_dialog():
                 st.session_state.ek_dialog_open = "sosyal_medya"
                 st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("sm_saved_notice"):
+        _sm_ph = st.empty()
+        _sm_ph.success("Kaydedildi! Tümünü Çalıştır sırasında Sosyal Medya Paylaşım bu ayarla çalışacak.")
+        time.sleep(2.2)
+        _sm_ph.empty()
+        st.session_state.pop("sm_saved_notice", None)
+
+    cleanup_btn_cols = st.columns([1, 1.45, 1])
+    with cleanup_btn_cols[1]:
+        st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+        if st.button(
+            "Eski Paylaşımları Temizle",
+            key="sm_cleanup_old_uploads_btn",
+            use_container_width=True,
+            disabled=st.session_state.get("batch_mode", False) or any_running() or (not script_exists),
+        ):
+            ok, msg = sosyal_medya_temizle_eski_yuklemeler(
+                older_than_days=SOCIAL_MEDIA_OLD_UPLOAD_CLEANUP_DAYS
+            )
+            st.session_state.ek_dialog_open = "sosyal_medya"
+            if ok:
+                st.session_state["sm_cleanup_notice"] = msg or "Eski paylaşımlar temizlendi."
+                st.session_state.pop("sm_cleanup_warning", None)
+            else:
+                st.session_state["sm_cleanup_warning"] = msg or "Eski paylaşımlar temizlenemedi."
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.caption(f"Bu buton R2 üzerindeki {SOCIAL_MEDIA_OLD_UPLOAD_CLEANUP_DAYS} günden eski video yüklemelerini siler.")
+
+    if st.session_state.get("sm_cleanup_notice"):
+        _sm_cleanup_ph = st.empty()
+        _sm_cleanup_ph.success(str(st.session_state.get("sm_cleanup_notice") or "Eski paylaşımlar temizlendi."))
+        time.sleep(2.2)
+        _sm_cleanup_ph.empty()
+        st.session_state.pop("sm_cleanup_notice", None)
+
+    if st.session_state.get("sm_cleanup_warning"):
+        _sm_cleanup_warn_ph = st.empty()
+        _sm_cleanup_warn_ph.warning(str(st.session_state.get("sm_cleanup_warning") or "Eski paylaşımlar temizlenemedi."))
+        time.sleep(2.6)
+        _sm_cleanup_warn_ph.empty()
+        st.session_state.pop("sm_cleanup_warning", None)
 
     st.markdown("---")
     if not script_exists:
@@ -11113,6 +14950,17 @@ def sosyal_medya_dialog():
 # Format (satır bazında): aspect_ratio / süre / ses / quality / model
 
 _VIDEO_AYAR_MODEL_HARITA = {
+    "Happy Horse 1.0": {
+        "script_key": "happy_horse_script",
+        "default_model": "happyhorse-1.0",
+        "models": ["happyhorse-1.0"],
+        "quality_map": {
+            "happyhorse-1.0": ["720p", "1080p"],
+        },
+        "durations": list(range(3, 16)),
+        "aspect_ratios": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        "ses": True,
+    },
     "Sora 2": {
         "script_key": "sora2_script",
         "default_model": "sora-2",
@@ -11204,6 +15052,501 @@ _VIDEO_AYAR_MODEL_HARITA = {
     },
 }
 
+
+def _normalize_video_settings_source_mode(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"auto", "otomatik"}:
+        return "auto"
+    if raw in {PROMPT_SOURCE_LINK, "youtube", "manual", "link"}:
+        return PROMPT_SOURCE_LINK
+    if raw in {PROMPT_SOURCE_DOWNLOADED_VIDEO, "download", "indirilen_video", "indirilen video"}:
+        return PROMPT_SOURCE_DOWNLOADED_VIDEO
+    if raw in {PROMPT_SOURCE_ADDED_VIDEO, "video", "eklenen_video", "eklenen video"}:
+        return PROMPT_SOURCE_ADDED_VIDEO
+    return "auto"
+
+
+def _video_settings_source_mode_label(value: str) -> str:
+    normalized = _normalize_video_settings_source_mode(value)
+    if normalized == PROMPT_SOURCE_LINK:
+        return "Link"
+    if normalized == PROMPT_SOURCE_DOWNLOADED_VIDEO:
+        return "İndirilen Video"
+    if normalized == PROMPT_SOURCE_ADDED_VIDEO:
+        return "Eklenen Video"
+    return "Otomatik Algıla"
+
+
+def _extract_prompt_folder_no(folder_name: str) -> int:
+    match = re.search(r"(\d+)\s*$", str(folder_name or "").strip())
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except Exception:
+        return 0
+
+
+def _normalize_prompt_mapping_key(value: str) -> str:
+    return str(value or "").strip().lower().rstrip("\\/")
+
+
+def _load_prompt_state_mapping() -> dict:
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    mapping = data.get("mapping") if isinstance(data, dict) else {}
+    return mapping if isinstance(mapping, dict) else {}
+
+
+def _list_prompt_link_entries() -> list[dict]:
+    links_file = str(st.session_state.settings.get("links_file") or "").strip()
+    if not links_file or not os.path.exists(links_file):
+        return []
+    out = []
+    try:
+        with open(links_file, "r", encoding="utf-8", errors="ignore") as f:
+            for idx, line in enumerate(f.read().splitlines(), start=1):
+                link = str(line or "").strip()
+                if not link:
+                    continue
+                out.append({
+                    "no": idx,
+                    "label": f"Link {idx}",
+                    "link": link,
+                })
+    except Exception:
+        return []
+    return out
+
+
+def _video_settings_entry_key(source_mode: str, source_no: int, prompt_folder: str = "") -> str:
+    raw = f"{_normalize_video_settings_source_mode(source_mode)}_{int(source_no or 0)}_{prompt_folder or ''}"
+    cleaned = re.sub(r"[^a-z0-9_]+", "_", raw.lower()).strip("_")
+    return cleaned or f"video_{int(source_no or 0)}"
+
+
+def _ratio_label_to_float(value: str) -> float:
+    text = str(value or "").strip()
+    if ":" not in text:
+        return 0.0
+    try:
+        left, right = text.split(":", 1)
+        left_num = float(left)
+        right_num = float(right)
+        if left_num <= 0 or right_num <= 0:
+            return 0.0
+        return left_num / right_num
+    except Exception:
+        return 0.0
+
+
+def _closest_supported_aspect_ratio(width: int, height: int, supported_ratios: list[str]) -> str:
+    options = [str(item or "").strip() for item in (supported_ratios or []) if str(item or "").strip()]
+    if not options:
+        return ""
+    if width <= 0 or height <= 0:
+        return options[0]
+    target = float(width) / float(height)
+    return min(
+        options,
+        key=lambda item: (
+            abs(_ratio_label_to_float(item) - target),
+            options.index(item),
+        ),
+    )
+
+
+def _closest_supported_duration(duration_seconds: float, supported_durations: list[int]) -> int:
+    values = [int(item) for item in (supported_durations or []) if str(item).strip()]
+    if not values:
+        return 0
+    if duration_seconds <= 0:
+        return values[0]
+    return min(values, key=lambda item: (abs(float(item) - float(duration_seconds)), item))
+
+
+def _parse_saved_duration_value(value, fallback: int = 0) -> int:
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except Exception:
+            return fallback
+    raw = str(value or "").strip()
+    match = re.search(r"(\d+)", raw)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            return fallback
+    return fallback
+
+
+def _sanitize_video_setting_values(raw_settings: dict, harita: dict, selected_alt_model: str, default_settings: dict) -> dict:
+    quality_options = list(harita.get("quality_map", {}).get(selected_alt_model, ["720p"]))
+    aspect_options = list(harita.get("aspect_ratios", ["16:9"]))
+    duration_options = [int(item) for item in harita.get("durations", [])]
+
+    default_duration = _parse_saved_duration_value(default_settings.get("duration"), duration_options[0] if duration_options else 0)
+    duration_value = _parse_saved_duration_value((raw_settings or {}).get("duration"), default_duration)
+    if duration_options:
+        if duration_value not in duration_options:
+            duration_value = _closest_supported_duration(duration_value or default_duration, duration_options)
+    else:
+        duration_value = default_duration
+
+    aspect_value = str((raw_settings or {}).get("aspect_ratio") or default_settings.get("aspect_ratio") or "").strip()
+    if aspect_value not in aspect_options:
+        aspect_value = str(default_settings.get("aspect_ratio") or "").strip()
+    if aspect_value not in aspect_options and aspect_options:
+        aspect_value = aspect_options[0]
+
+    quality_value = str((raw_settings or {}).get("quality") or default_settings.get("quality") or "").strip()
+    if quality_value not in quality_options and quality_options:
+        quality_value = quality_options[0]
+
+    ses_value = str((raw_settings or {}).get("ses") or default_settings.get("ses") or "kapalı").strip().lower()
+    ses_value = "açık" if ses_value in {"açık", "acik", "on", "true", "yes", "evet"} else "kapalı"
+
+    return {
+        "aspect_ratio": aspect_value,
+        "duration": int(duration_value or 0),
+        "ses": ses_value,
+        "quality": quality_value,
+        "model": selected_alt_model,
+    }
+
+
+def _video_settings_override_default_state() -> dict:
+    return {
+        "mode": "single",
+        "source_mode": "auto",
+        "entries": [],
+    }
+
+
+def _video_settings_override_load() -> dict:
+    state = _video_settings_override_default_state()
+    if not os.path.exists(VIDEO_SETTINGS_OVERRIDE_FILE):
+        return state
+    try:
+        with open(VIDEO_SETTINGS_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return state
+    if not isinstance(data, dict):
+        return state
+    state["mode"] = "per_video" if str(data.get("mode") or "").strip().lower() == "per_video" else "single"
+    state["source_mode"] = _normalize_video_settings_source_mode(data.get("source_mode"))
+    entries = data.get("entries")
+    if isinstance(entries, list):
+        temiz = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                temiz.append(entry)
+        state["entries"] = temiz
+    return state
+
+
+def _video_settings_override_save(mode: str, source_mode: str, entries: list[dict], extra: dict | None = None) -> bool:
+    payload = {
+        "mode": "per_video" if str(mode or "").strip().lower() == "per_video" else "single",
+        "source_mode": _normalize_video_settings_source_mode(source_mode),
+        "entries": entries if isinstance(entries, list) else [],
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            payload[key] = value
+    try:
+        with open(VIDEO_SETTINGS_OVERRIDE_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def _clear_video_settings_override_widget_state():
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("va_pv_"):
+            st.session_state.pop(key, None)
+    for key in (
+        "va_per_video_targets",
+        "va_per_video_source_signature",
+        "va_override_source_mode",
+        "va_apply_mode",
+    ):
+        st.session_state.pop(key, None)
+
+
+def _clear_video_settings_overrides(reset_widgets: bool = True):
+    try:
+        if os.path.exists(VIDEO_SETTINGS_OVERRIDE_FILE):
+            os.remove(VIDEO_SETTINGS_OVERRIDE_FILE)
+    except Exception:
+        pass
+    if reset_widgets:
+        _clear_video_settings_override_widget_state()
+
+
+def _match_saved_video_settings_entry(target: dict, saved_entries: list[dict]) -> dict | None:
+    if not isinstance(saved_entries, list):
+        return None
+    target_key = str(target.get("target_key") or "").strip()
+    target_prompt_folder = _normalize_prompt_mapping_key(target.get("prompt_folder"))
+    try:
+        target_source_no = int(target.get("source_no") or 0)
+    except Exception:
+        target_source_no = 0
+    target_source_mode = _normalize_video_settings_source_mode(target.get("source_mode"))
+
+    for entry in saved_entries:
+        if not isinstance(entry, dict):
+            continue
+        if target_key and str(entry.get("target_key") or "").strip() == target_key:
+            return entry
+    for entry in saved_entries:
+        if not isinstance(entry, dict):
+            continue
+        if target_prompt_folder and _normalize_prompt_mapping_key(entry.get("prompt_folder")) == target_prompt_folder:
+            return entry
+    for entry in saved_entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            entry_source_no = int(entry.get("source_no") or 0)
+        except Exception:
+            entry_source_no = 0
+        if target_source_no > 0 and entry_source_no == target_source_no:
+            if _normalize_video_settings_source_mode(entry.get("source_mode")) == target_source_mode:
+                return entry
+    return None
+
+
+def _build_saved_video_settings_fallback_targets(saved_state: dict) -> list[dict]:
+    out = []
+    for idx, entry in enumerate((saved_state or {}).get("entries", []), start=1):
+        if not isinstance(entry, dict):
+            continue
+        source_no = _parse_saved_duration_value(entry.get("source_no"), idx)
+        prompt_folder = str(entry.get("prompt_folder") or "").strip()
+        source_mode = _normalize_video_settings_source_mode(entry.get("source_mode"))
+        label = str(entry.get("label") or entry.get("source_label") or prompt_folder or f"Video {idx}").strip() or f"Video {idx}"
+        out.append({
+            "target_key": str(entry.get("target_key") or _video_settings_entry_key(source_mode, source_no, prompt_folder)).strip(),
+            "label": label,
+            "source_label": str(entry.get("source_label") or label).strip(),
+            "source_mode": source_mode,
+            "source_kind": str(entry.get("source_kind") or source_mode or "video").strip(),
+            "source_no": source_no,
+            "video_path": str(entry.get("video_path") or "").strip(),
+            "video_name": str(entry.get("video_name") or "").strip(),
+            "prompt_folder": prompt_folder,
+            "source_link": str(entry.get("source_link") or "").strip(),
+        })
+    return out
+
+
+def _list_video_settings_source_targets(source_mode: str) -> tuple[list[dict], str]:
+    selected_mode = _normalize_video_settings_source_mode(source_mode)
+    effective_mode = _get_prompt_runtime_source_mode() if selected_mode == "auto" else selected_mode
+    prompt_entries = _list_video_prompt_entries()
+    prompt_by_no = {}
+    for item in prompt_entries:
+        folder_name = str(item.get("folder_name") or "").strip()
+        folder_no = _extract_prompt_folder_no(folder_name)
+        if folder_no > 0 and folder_no not in prompt_by_no:
+            prompt_by_no[folder_no] = folder_name
+
+    reverse_mapping = {}
+    for key, folder_name in _load_prompt_state_mapping().items():
+        reverse_mapping[_normalize_prompt_mapping_key(key)] = str(folder_name or "").strip()
+
+    targets = []
+    if effective_mode == PROMPT_SOURCE_ADDED_VIDEO:
+        for idx, entry in enumerate(_list_added_video_preview_entries(), start=1):
+            source_no = int(entry.get("no") or idx)
+            video_path = str(entry.get("video_path") or "").strip()
+            prompt_folder = reverse_mapping.get(_normalize_prompt_mapping_key(video_path)) or prompt_by_no.get(source_no, "")
+            targets.append({
+                "target_key": _video_settings_entry_key(PROMPT_SOURCE_ADDED_VIDEO, source_no, prompt_folder),
+                "label": f"Eklenen Video {source_no}",
+                "source_label": "Eklenen Video",
+                "source_mode": PROMPT_SOURCE_ADDED_VIDEO,
+                "source_kind": PROMPT_SOURCE_ADDED_VIDEO,
+                "source_no": source_no,
+                "video_path": video_path,
+                "video_name": str(entry.get("video_name") or "").strip(),
+                "prompt_folder": prompt_folder,
+                "source_link": "",
+            })
+    elif effective_mode == PROMPT_SOURCE_DOWNLOADED_VIDEO:
+        for idx, entry in enumerate(_list_download_video_entries(), start=1):
+            source_no = int(entry.get("no") or idx)
+            video_path = str(entry.get("video_path") or "").strip()
+            prompt_folder = reverse_mapping.get(_normalize_prompt_mapping_key(video_path)) or prompt_by_no.get(source_no, "")
+            targets.append({
+                "target_key": _video_settings_entry_key(PROMPT_SOURCE_DOWNLOADED_VIDEO, source_no, prompt_folder),
+                "label": f"İndirilen Video {source_no}",
+                "source_label": "İndirilen Video",
+                "source_mode": PROMPT_SOURCE_DOWNLOADED_VIDEO,
+                "source_kind": PROMPT_SOURCE_DOWNLOADED_VIDEO,
+                "source_no": source_no,
+                "video_path": video_path,
+                "video_name": str(entry.get("video_name") or "").strip(),
+                "prompt_folder": prompt_folder,
+                "source_link": "",
+            })
+    elif effective_mode == PROMPT_SOURCE_LINK:
+        download_by_no = {}
+        for entry in _list_download_video_entries():
+            try:
+                source_no = int(entry.get("no") or 0)
+            except Exception:
+                source_no = 0
+            if source_no > 0:
+                download_by_no[source_no] = entry
+        for link_entry in _list_prompt_link_entries():
+            source_no = int(link_entry.get("no") or 0)
+            download_entry = download_by_no.get(source_no)
+            video_path = str((download_entry or {}).get("video_path") or "").strip()
+            link_url = str(link_entry.get("link") or "").strip()
+            prompt_folder = (
+                reverse_mapping.get(_normalize_prompt_mapping_key(link_url))
+                or reverse_mapping.get(_normalize_prompt_mapping_key(video_path))
+                or prompt_by_no.get(source_no, "")
+            )
+            label = f"Link {source_no}"
+            if selected_mode == "auto" and video_path:
+                label = f"İndirilen Video {source_no}"
+            targets.append({
+                "target_key": _video_settings_entry_key(PROMPT_SOURCE_LINK, source_no, prompt_folder),
+                "label": label,
+                "source_label": "Link",
+                "source_mode": PROMPT_SOURCE_LINK,
+                "source_kind": PROMPT_SOURCE_DOWNLOADED_VIDEO if video_path else PROMPT_SOURCE_LINK,
+                "source_no": source_no,
+                "video_path": video_path,
+                "video_name": str((download_entry or {}).get("video_name") or "").strip(),
+                "prompt_folder": prompt_folder,
+                "source_link": link_url,
+            })
+
+    if not targets and prompt_entries:
+        for idx, item in enumerate(prompt_entries, start=1):
+            folder_name = str(item.get("folder_name") or "").strip()
+            source_no = _extract_prompt_folder_no(folder_name) or idx
+            targets.append({
+                "target_key": _video_settings_entry_key(effective_mode, source_no, folder_name),
+                "label": folder_name,
+                "source_label": "Prompt",
+                "source_mode": effective_mode,
+                "source_kind": "prompt",
+                "source_no": source_no,
+                "video_path": "",
+                "video_name": "",
+                "prompt_folder": folder_name,
+                "source_link": "",
+            })
+
+    targets.sort(key=lambda item: int(item.get("source_no") or 0))
+    return targets, effective_mode
+
+
+def _build_video_settings_editor_entries(
+    source_targets: list[dict],
+    saved_state: dict,
+    harita: dict,
+    selected_alt_model: str,
+    default_settings: dict,
+) -> list[dict]:
+    entries = []
+    targets = list(source_targets or [])
+    saved_entries = (saved_state or {}).get("entries", []) if isinstance(saved_state, dict) else []
+
+    if not targets and isinstance(saved_entries, list):
+        targets = _build_saved_video_settings_fallback_targets(saved_state)
+
+    for idx, target in enumerate(targets, start=1):
+        saved_entry = _match_saved_video_settings_entry(target, saved_entries)
+        base_settings = dict(default_settings)
+        detected = {
+            "actual_duration_seconds": 0.0,
+            "actual_duration_label": "",
+            "actual_resolution": "",
+            "aspect_ratio": "",
+            "duration": 0,
+        }
+        note = ""
+        video_path = str(target.get("video_path") or "").strip()
+        if video_path and os.path.exists(video_path):
+            metadata = _get_video_media_metadata(video_path)
+            duration_seconds = float(metadata.get("duration") or 0.0)
+            width = int(metadata.get("width") or 0)
+            height = int(metadata.get("height") or 0)
+            detected["actual_duration_seconds"] = duration_seconds
+            detected["actual_duration_label"] = _format_duration(duration_seconds) if duration_seconds > 0 else ""
+            detected["actual_resolution"] = f"{width}x{height}" if width > 0 and height > 0 else ""
+            detected["aspect_ratio"] = _closest_supported_aspect_ratio(width, height, harita.get("aspect_ratios", []))
+            detected["duration"] = _closest_supported_duration(duration_seconds, harita.get("durations", []))
+            if detected["aspect_ratio"]:
+                base_settings["aspect_ratio"] = detected["aspect_ratio"]
+            if detected["duration"]:
+                base_settings["duration"] = detected["duration"]
+            if not detected["actual_duration_label"] and detected["duration"]:
+                detected["actual_duration_label"] = f"{detected['duration']}sn"
+        elif target.get("source_mode") == PROMPT_SOURCE_LINK:
+            note = "Yerel video dosyası henüz bulunamadı. Süre ve boyut alanlarını elle düzenleyebilirsiniz."
+        else:
+            note = "Bu video için otomatik algılama yapılamadı. Varsayılan ayarlar kullanıldı."
+
+        if isinstance(saved_entry, dict):
+            base_settings.update(saved_entry.get("settings") if isinstance(saved_entry.get("settings"), dict) else {})
+            if isinstance(saved_entry.get("detected"), dict):
+                for key, value in saved_entry.get("detected", {}).items():
+                    detected[key] = value
+            if str(saved_entry.get("note") or "").strip():
+                note = str(saved_entry.get("note") or "").strip()
+
+        sanitized_settings = _sanitize_video_setting_values(base_settings, harita, selected_alt_model, default_settings)
+        prompt_folder = str(target.get("prompt_folder") or "").strip()
+        entries.append({
+            "target_key": str(target.get("target_key") or _video_settings_entry_key(target.get("source_mode"), target.get("source_no"), prompt_folder)).strip(),
+            "label": str(target.get("label") or f"Video {idx}").strip() or f"Video {idx}",
+            "source_label": str(target.get("source_label") or "").strip(),
+            "source_mode": _normalize_video_settings_source_mode(target.get("source_mode")),
+            "source_kind": str(target.get("source_kind") or "").strip(),
+            "source_no": int(target.get("source_no") or idx),
+            "video_path": video_path,
+            "video_name": str(target.get("video_name") or "").strip(),
+            "prompt_folder": prompt_folder,
+            "source_link": str(target.get("source_link") or "").strip(),
+            "detected": detected,
+            "note": note,
+            "settings": sanitized_settings,
+        })
+    return entries
+
+
+def _prime_video_settings_editor_widgets(entries: list[dict], force: bool = False):
+    for entry in entries or []:
+        key_suffix = str(entry.get("target_key") or "").strip()
+        settings = entry.get("settings") if isinstance(entry.get("settings"), dict) else {}
+        defaults = {
+            f"va_pv_quality_{key_suffix}": settings.get("quality"),
+            f"va_pv_aspect_{key_suffix}": settings.get("aspect_ratio"),
+            f"va_pv_duration_{key_suffix}": settings.get("duration"),
+            f"va_pv_ses_{key_suffix}": settings.get("ses"),
+        }
+        for widget_key, widget_value in defaults.items():
+            if force or widget_key not in st.session_state:
+                st.session_state[widget_key] = widget_value
+
+
 def _prompt_input_selection_state_path() -> str:
     return os.path.join(CONTROL_DIR, "prompt_input_selection.json")
 
@@ -11230,16 +15573,19 @@ def _list_prompt_input_entries() -> dict:
         except Exception:
             pass
             
-    adir = s.get("added_video_dir", "")
-    if os.path.exists(adir):
-        try:
-            for subdir in os.listdir(adir):
-                subpath = os.path.join(adir, subdir)
-                if os.path.isdir(subpath):
-                    vids = [f for f in os.listdir(subpath) if f.lower().endswith(('.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v'))]
-                    if vids: result["added_videos"].append(vids[0])
-        except Exception:
-            pass
+    try:
+        seen_added = set()
+        for idx, entry in enumerate(_list_added_video_preview_entries(), start=1):
+            try:
+                source_no = int(entry.get("no") or idx)
+            except Exception:
+                source_no = idx
+            label = f"Eklenen Video {source_no}"
+            if label not in seen_added:
+                result["added_videos"].append(label)
+                seen_added.add(label)
+    except Exception:
+        pass
             
     return result
 
@@ -11284,6 +15630,39 @@ def prompt_ayarlari_dialog():
     st.markdown("Prompt üretilecek olan hedefleri tek tek veya toplu olarak seçebilirsiniz.")
     entries = _list_prompt_input_entries()
     current_state = _prompt_input_selection_load()
+    template_options = _get_prompt_template_options(st.session_state.settings)
+    template_map = {item["key"]: item for item in template_options}
+    kayitli_template_key = _normalize_prompt_template_key(
+        st.session_state.settings.get("prompt_template_key"),
+        "original",
+    )
+    if st.session_state.get("prompt_template_choice") not in template_map:
+        st.session_state["prompt_template_choice"] = kayitli_template_key
+    secili_template_key = _normalize_prompt_template_key(
+        st.session_state.get("prompt_template_choice"),
+        kayitli_template_key,
+    )
+    secili_template = template_map.get(secili_template_key, template_map.get("original"))
+
+    st.markdown("#### 🧠 İstem Seçimi")
+    template_cols = st.columns(len(template_options))
+    for idx, template in enumerate(template_options):
+        with template_cols[idx]:
+            if st.button(
+                template["label"],
+                key=f"pa_template_{template['key']}",
+                use_container_width=True,
+                type="primary" if secili_template_key == template["key"] else "secondary",
+            ):
+                st.session_state["prompt_template_choice"] = template["key"]
+                st.session_state.ek_dialog_open = "prompt_ayarlari"
+                st.rerun()
+
+    if secili_template:
+        st.caption(f"Seçili istem: {secili_template['label']} ({os.path.basename(secili_template['path'])})")
+        if not os.path.exists(secili_template["path"]):
+            st.warning(f"Seçili istem dosyası bulunamadı: {secili_template['path']}")
+    st.markdown("---")
     
     tumunu_uret = st.checkbox("Tüm girdiler için üret", value=(current_state.get("mode") != "custom"), key="pa_select_all")
     
@@ -11325,13 +15704,27 @@ def prompt_ayarlari_dialog():
             st.rerun()
     with cols[1]:
         if st.button("Kaydet", type="primary", use_container_width=True):
+            secili_template_key = _normalize_prompt_template_key(
+                st.session_state.get("prompt_template_choice"),
+                kayitli_template_key,
+            )
+            secili_template = template_map.get(secili_template_key, template_map.get("original"))
+            if not secili_template:
+                st.error("Seçili istem bulunamadı.")
+                return
+            if not os.path.exists(secili_template["path"]):
+                st.error(f"Seçili istem dosyası bulunamadı: {secili_template['path']}")
+                return
+
             new_mode = "all" if tumunu_uret else "custom"
+            st.session_state.settings["prompt_template_key"] = secili_template["key"]
+            save_settings(st.session_state.settings)
             _prompt_input_selection_save(new_mode, {
                 "links": secili_linkler,
                 "downloaded_videos": secili_indirilen,
                 "added_videos": secili_eklenen
             })
-            st.success("Ayarlar kaydedildi!")
+            st.success(f"Ayarlar kaydedildi! İstem: {secili_template['label']}")
             time.sleep(0.7)
             st.session_state.ek_dialog_open = "prompt_ayarlari"
             st.rerun()
@@ -11547,6 +15940,12 @@ def _cleanup_pixverse_prompt_override():
 
 
 def start_pixverse_bg(owner: str) -> bool:
+    active_video_model = get_active_video_model(st.session_state.settings)
+    if _is_video_transition_mode() and not video_model_supports_transition(active_video_model):
+        log(f"[ERROR] {active_video_model} modeli Start End Frame (Transition) modunu desteklemiyor.")
+        st.session_state.status["pixverse"] = "error"
+        return False
+
     overridden = False
     extra_args = []
     prompt_source = _resolve_video_prompt_source_for_generation()
@@ -11628,6 +16027,7 @@ def video_ayarlari_dialog():
     prompt_entries = _list_video_prompt_entries()
     prompt_options = [item.get("folder_name", "") for item in prompt_entries]
     secili_prompt_state = _video_prompt_selection_load(prompt_options)
+    saved_override_state = _video_settings_override_load()
 
     st.markdown("#### 📝 Üretilecek Promptlar")
 
@@ -11658,6 +16058,26 @@ def video_ayarlari_dialog():
     aktif_model = get_active_video_model()
     default_idx = model_secenekleri.index(aktif_model) if aktif_model in model_secenekleri else 0
     secilen_model = st.selectbox("🎬 Model Seçimi", model_secenekleri, index=default_idx, key="va_model_sec")
+
+    transition_state = _load_transition_ui_state()
+    saved_video_mode = transition_state.get("video_mode", "normal")
+    transition_supported = video_model_supports_transition(secilen_model)
+    if transition_supported:
+        video_mode_options = ["Normal Video", "Start End Frame (Transition)"]
+        saved_mode_label = _video_mode_option_label(saved_video_mode)
+        selected_video_mode_label = st.radio(
+            "Üretim Modu",
+            video_mode_options,
+            horizontal=True,
+            index=video_mode_options.index(saved_mode_label) if saved_mode_label in video_mode_options else 0,
+            key="va_video_mode",
+        )
+        selected_video_mode = _video_mode_option_value(selected_video_mode_label)
+        if selected_video_mode == "transition":
+            st.info("Transition modunda PixVerse komutu `create transition --images start end` ile çalışır. Bu modda aspect-ratio alanı CLI tarafından kullanılmadığı için oran start/end görsellerinden gelir.")
+    else:
+        selected_video_mode = "normal"
+        st.info(f"{secilen_model} modeli Start End Frame (Transition) modunu desteklemiyor. Bu model için yalnızca Normal Video kullanılabilir.")
 
     harita = _VIDEO_AYAR_MODEL_HARITA[secilen_model]
     txt_path = _video_ayar_txt_yolu(secilen_model)
@@ -11704,15 +16124,203 @@ def video_ayarlari_dialog():
     _v56_kisit_hatasi = False
 
     st.markdown("---")
-    c_save, c_back = st.columns(2)
+    if st.session_state.get("va_apply_mode") not in {"Tek Ayar", "Video Bazlı Ayar"}:
+        st.session_state["va_apply_mode"] = "Video Bazlı Ayar" if saved_override_state.get("mode") == "per_video" else "Tek Ayar"
+    if _normalize_video_settings_source_mode(st.session_state.get("va_override_source_mode")) == "auto" and saved_override_state.get("source_mode") != "auto":
+        st.session_state["va_override_source_mode"] = saved_override_state.get("source_mode")
+
+    global_settings = {
+        "aspect_ratio": secilen_boyut,
+        "duration": secilen_sure_int,
+        "ses": secilen_ses,
+        "quality": secilen_kalite,
+        "model": secilen_alt_model,
+    }
+
+    st.markdown("#### 🧩 Ayar Uygulama Şekli")
+    kayit_modu = st.radio(
+        "Ayar modu",
+        ["Tek Ayar", "Video Bazlı Ayar"],
+        key="va_apply_mode",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    override_entries_for_save = []
+    override_source_mode = _normalize_video_settings_source_mode(saved_override_state.get("source_mode"))
+    if kayit_modu == "Video Bazlı Ayar":
+        st.caption("Video bazlı ayarda tek blok ayarı koruyup, her video için ayrıca süre/boyut/kalite/ses düzenleyebilirsiniz.")
+        source_mode_options = ["auto", PROMPT_SOURCE_LINK, PROMPT_SOURCE_DOWNLOADED_VIDEO, PROMPT_SOURCE_ADDED_VIDEO]
+        mevcut_source_mode = _normalize_video_settings_source_mode(st.session_state.get("va_override_source_mode"))
+        if mevcut_source_mode not in source_mode_options:
+            mevcut_source_mode = _normalize_video_settings_source_mode(saved_override_state.get("source_mode"))
+        if mevcut_source_mode not in source_mode_options:
+            mevcut_source_mode = "auto"
+        st.session_state["va_override_source_mode"] = mevcut_source_mode
+        override_source_mode = st.selectbox(
+            "Otomatik algılama kaynağı",
+            source_mode_options,
+            key="va_override_source_mode",
+            format_func=_video_settings_source_mode_label,
+        )
+        source_targets, effective_source_mode = _list_video_settings_source_targets(override_source_mode)
+        source_signature = json.dumps(
+            {
+                "model": secilen_model,
+                "alt_model": secilen_alt_model,
+                "targets": [
+                    {
+                        "target_key": item.get("target_key"),
+                        "source_no": item.get("source_no"),
+                        "prompt_folder": item.get("prompt_folder"),
+                        "video_path": item.get("video_path"),
+                        "source_link": item.get("source_link"),
+                    }
+                    for item in source_targets
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+        if override_source_mode == "auto":
+            st.caption(f"Aktif algılama kaynağı: {_video_settings_source_mode_label(effective_source_mode)}")
+
+        detect_clicked = st.button(
+            "📡 Otomatik Algıla / Listeyi Güncelle",
+            key="va_detect_source_videos",
+            use_container_width=True,
+        )
+
+        needs_init = ("va_per_video_targets" not in st.session_state) or (st.session_state.get("va_per_video_source_signature") != source_signature)
+        if detect_clicked or needs_init:
+            built_entries = _build_video_settings_editor_entries(
+                source_targets,
+                saved_override_state,
+                harita,
+                secilen_alt_model,
+                global_settings,
+            )
+            st.session_state["va_per_video_targets"] = built_entries
+            st.session_state["va_per_video_source_signature"] = source_signature
+            _prime_video_settings_editor_widgets(built_entries, force=detect_clicked or needs_init)
+            if detect_clicked:
+                st.session_state.ek_dialog_open = "video_ayarlari"
+                st.rerun()
+
+        editor_entries = st.session_state.get("va_per_video_targets", []) or []
+        missing_local_video = [entry for entry in editor_entries if not str(entry.get("video_path") or "").strip()]
+        if missing_local_video and effective_source_mode == PROMPT_SOURCE_LINK:
+            st.warning("Bazı Link girdileri için indirilen video bulunamadı. Bu satırlarda süre ve boyutu elle düzenleyebilirsiniz.")
+        if not editor_entries:
+            st.info("Video bazlı ayar oluşturmak için algılanacak kaynak video veya prompt bulunamadı.")
+        else:
+            summary_rows = []
+            for entry in editor_entries:
+                detected = entry.get("detected") if isinstance(entry.get("detected"), dict) else {}
+                summary_rows.append({
+                    "Video": entry.get("label"),
+                    "Kaynak": entry.get("source_label") or _video_settings_source_mode_label(entry.get("source_mode")),
+                    "Algılanan Süre": detected.get("actual_duration_label") or "Elle",
+                    "Algılanan Boyut": detected.get("aspect_ratio") or "-",
+                    "Prompt": entry.get("prompt_folder") or "-",
+                })
+            st.markdown("**Algılanan Video Listesi:**")
+            st.table(summary_rows)
+
+            duration_options = [int(item) for item in harita.get("durations", [])]
+            quality_options = list(harita.get("quality_map", {}).get(secilen_alt_model, ["720p"]))
+            aspect_options = list(harita.get("aspect_ratios", ["16:9"]))
+            ses_options = ["açık", "kapalı"] if harita.get("ses", False) else ["kapalı"]
+
+            for idx, entry in enumerate(editor_entries, start=1):
+                target_key = str(entry.get("target_key") or f"video_{idx}").strip()
+                detected = entry.get("detected") if isinstance(entry.get("detected"), dict) else {}
+                prompt_caption = entry.get("prompt_folder") or "Prompt klasörü henüz oluşmadı"
+                header = f"{entry.get('label') or f'Video {idx}'}"
+                with st.expander(f"🎬 {header}", expanded=idx <= 3):
+                    st.caption(f"Eşleşen prompt: {prompt_caption}")
+                    if detected.get("actual_resolution") or detected.get("actual_duration_label"):
+                        st.caption(
+                            f"Algılandı: {detected.get('actual_resolution') or 'Çözünürlük yok'}"
+                            f" | {detected.get('actual_duration_label') or 'Süre yok'}"
+                            f" | Öneri oran: {detected.get('aspect_ratio') or '-'}"
+                            f" | Öneri süre: {str(detected.get('duration') or '-') + 's' if detected.get('duration') else '-'}"
+                        )
+                    if entry.get("note"):
+                        st.caption(str(entry.get("note") or "").strip())
+
+                    cols = st.columns(4 if harita.get("ses", False) else 3)
+                    with cols[0]:
+                        st.selectbox(
+                            "Kalite",
+                            quality_options,
+                            key=f"va_pv_quality_{target_key}",
+                        )
+                    with cols[1]:
+                        st.selectbox(
+                            "Video Boyutu",
+                            aspect_options,
+                            key=f"va_pv_aspect_{target_key}",
+                        )
+                    with cols[2]:
+                        st.selectbox(
+                            "Video Süresi",
+                            duration_options,
+                            key=f"va_pv_duration_{target_key}",
+                            format_func=lambda value: f"{value}s",
+                        )
+                    if harita.get("ses", False):
+                        with cols[3]:
+                            st.selectbox(
+                                "Ses",
+                                ses_options,
+                                key=f"va_pv_ses_{target_key}",
+                            )
+
+            for entry in editor_entries:
+                target_key = str(entry.get("target_key") or "").strip()
+                override_entries_for_save.append({
+                    "target_key": target_key,
+                    "label": str(entry.get("label") or "").strip(),
+                    "source_label": str(entry.get("source_label") or "").strip(),
+                    "source_mode": _normalize_video_settings_source_mode(entry.get("source_mode")),
+                    "source_kind": str(entry.get("source_kind") or "").strip(),
+                    "source_no": int(entry.get("source_no") or 0),
+                    "video_path": str(entry.get("video_path") or "").strip(),
+                    "video_name": str(entry.get("video_name") or "").strip(),
+                    "prompt_folder": str(entry.get("prompt_folder") or "").strip(),
+                    "source_link": str(entry.get("source_link") or "").strip(),
+                    "detected": entry.get("detected") if isinstance(entry.get("detected"), dict) else {},
+                    "note": str(entry.get("note") or "").strip(),
+                    "settings": _sanitize_video_setting_values(
+                        {
+                            "quality": st.session_state.get(f"va_pv_quality_{target_key}"),
+                            "aspect_ratio": st.session_state.get(f"va_pv_aspect_{target_key}"),
+                            "duration": st.session_state.get(f"va_pv_duration_{target_key}"),
+                            "ses": st.session_state.get(f"va_pv_ses_{target_key}", "kapalı"),
+                            "model": secilen_alt_model,
+                        },
+                        harita,
+                        secilen_alt_model,
+                        global_settings,
+                    ),
+                })
+    else:
+        st.caption("Tek ayar modu seçildiğinde mevcut ayarlar tüm videolara aynı şekilde uygulanır.")
+
+    st.markdown("---")
+    c_save, c_clear, c_back = st.columns(3)
     with c_save:
         st.markdown('<div class="btn-success">', unsafe_allow_html=True)
         if st.button("💾 Kaydet", use_container_width=True, key="va_kaydet", disabled=_v56_kisit_hatasi):
             if not tumunu_uret and not secili_promptlar:
                 st.error("❌ En az 1 prompt seçin veya 'Tüm promptları üret' seçeneğini açın.")
+            elif kayit_modu == "Video Bazlı Ayar" and not override_entries_for_save:
+                st.error("❌ Video bazlı ayar için algılanan en az 1 video olmalı.")
             elif txt_path:
                 ok = _video_ayar_kaydet(txt_path, secilen_boyut, f"{secilen_sure_int}s", secilen_ses, secilen_kalite, secilen_alt_model)
                 if ok:
+                    _save_transition_ui_state({"video_mode": selected_video_mode})
                     kayit = _video_prompt_selection_save(
                         prompt_options if tumunu_uret else secili_promptlar,
                         prompt_options,
@@ -11722,8 +16330,26 @@ def video_ayarlari_dialog():
                         log(f"[INFO] Seçili promptlar kaydedildi: {secim_ozeti}")
                     else:
                         log("[INFO] Video üretimi tüm promptlar için ayarlandı.")
+                    if kayit_modu == "Video Bazlı Ayar":
+                        override_ok = _video_settings_override_save(
+                            "per_video",
+                            override_source_mode,
+                            override_entries_for_save,
+                            extra={
+                                "selected_model": secilen_model,
+                                "video_mode": selected_video_mode,
+                            },
+                        )
+                        if not override_ok:
+                            st.error("❌ Video bazlı ayarlar kaydedilemedi!")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            return
+                        log(f"[INFO] Video bazlı ayarlar kaydedildi: {len(override_entries_for_save)} video")
+                        st.session_state["video_ayar_notice"] = f"✅ Ayarlar kaydedildi! {len(override_entries_for_save)} video için ayrı video ayarı uygulanacak."
+                    else:
+                        _clear_video_settings_overrides(reset_widgets=True)
+                        st.session_state["video_ayar_notice"] = "✅ Ayarlar kaydedildi! Tüm videolar için tek blok ayarı kullanılacak."
                     log(f"[INFO] Video ayarları kaydedildi: {secilen_model} → {secilen_boyut}, {secilen_sure_int}s, {secilen_kalite}, ses={secilen_ses}, model={secilen_alt_model}")
-                    st.success("✅ Ayarlar kaydedildi! Video Üret dediğinizde seçtiğiniz promptlar kullanılacak.")
                     st.session_state["va_saved"] = True
                     st.session_state.ek_dialog_open = "video_ayarlari"
                     st.rerun()
@@ -11732,12 +16358,25 @@ def video_ayarlari_dialog():
             else:
                 st.error("❌ Script yolu bulunamadı!")
         st.markdown('</div>', unsafe_allow_html=True)
+    with c_clear:
+        st.markdown('<div class="btn-warning">', unsafe_allow_html=True)
+        if st.button("🗑️ Kayıt Temizle", key="va_clear_saved", use_container_width=True):
+            _clear_video_settings_overrides(reset_widgets=True)
+            st.session_state["va_apply_mode"] = "Tek Ayar"
+            st.session_state["va_override_source_mode"] = "auto"
+            st.session_state["video_ayar_notice"] = "🗑️ Video bazlı kayıtlar temizlendi. Tek ayar moduna dönüldü."
+            st.session_state.ek_dialog_open = "video_ayarlari"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
     with c_back:
         st.markdown('<div class="btn-info">', unsafe_allow_html=True)
         if st.button("⬅️ Geri", key="bck_video_ayar", use_container_width=True):
             st.session_state.ek_dialog_open = "menu"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("video_ayar_notice"):
+        st.success(st.session_state.pop("video_ayar_notice"))
 
 
 # ---- VİDEO ÜRETME KREDİSİ DIALOG ----
@@ -11824,6 +16463,11 @@ def kredi_dialog():
         render_dialog_single_controls(step_match=aktif_kredi_step, prefix=f"dlg_{aktif_kredi_step}")
 
     st.markdown("""<hr style="margin:10px 0 6px 0;border-color:rgba(255,255,255,0.10);">""", unsafe_allow_html=True)
+    st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+    if st.button("⬅️ Geri", key="bck_kredi", use_container_width=True):
+        st.session_state.ek_dialog_open = "menu"
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 
@@ -11923,6 +16567,8 @@ if "get_loader_html" not in globals():
 
 if "render_step_button" not in globals():
     def render_step_button(key, label, btn_class_html, loading_text):
+        if key == "video_klonla":
+            return False
         placeholder = st.empty()
         st.session_state.ui_placeholders[key] = placeholder
         current_status = st.session_state.status.get(key, "idle")
@@ -11964,6 +16610,7 @@ with left_col:
     # Ek İşlemler butonu: download çalışıyorsa yükleme göstergesi göster
     _ek_running_step = st.session_state.get("bg_node_key") if bg_is_running() else None
     _ek_islem_labels = {
+        "video_klonla": "Klon Video Uretiliyor...",
         "youtube_link": "📺 YouTube linkleri hazırlanıyor...",
         "download": "⬇️ Video İndiriliyor...",
         "gorsel_analiz": "🖼️ Görsel Analiz Yapılıyor...",
@@ -12001,38 +16648,52 @@ with left_col:
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
-    if render_step_button("analyze", "📝 Prompt Oluştur", "btn-info", "Prompt Oluşturuluyor..."):
+    _manual_batch_mode = _is_manual_batch_selection()
+
+    if _manual_batch_mode:
+        c_chk_analyze, c_btn_analyze = st.columns([0.12, 0.88])
+        with c_chk_analyze:
+            st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
+            _batch_selection_checkbox("analyze", "Prompt Oluştur seçimi", "chk_batch_analyze")
+            st.markdown("</div>", unsafe_allow_html=True)
+        with c_btn_analyze:
+            _clicked_analyze = render_step_button("analyze", "📝 Prompt Oluştur", "btn-info", "Prompt Oluşturuluyor...")
+    else:
+        _clicked_analyze = render_step_button("analyze", "📝 Prompt Oluştur", "btn-info", "Prompt Oluşturuluyor...")
+
+    if _clicked_analyze:
         st.session_state.single_paused = False; st.session_state.single_finish_requested = False; st.session_state.single_mode = True
         st.session_state.bg_last_result = None; st.session_state.single_step = "analyze"
         cleanup_flags(); st.session_state.status["analyze"] = "running"; st.rerun()
 
-    if render_step_button("pixverse", get_video_generation_label(), "btn-warning", get_video_generation_loading_text()):
+    if render_step_button("video_klonla", "🎬 Klon Video Üret", "btn-teal", "Klon Video Üretiliyor..."):
+        st.session_state.single_paused = False; st.session_state.single_finish_requested = False; st.session_state.single_mode = True
+        st.session_state.bg_last_result = None; st.session_state.single_step = "video_klonla"
+        cleanup_flags(); st.session_state.status["video_klonla"] = "running"; st.rerun()
+
+    if _manual_batch_mode:
+        c_chk_pixverse, c_btn_pixverse = st.columns([0.12, 0.88])
+        with c_chk_pixverse:
+            st.markdown("<div style='padding-top:6px'>", unsafe_allow_html=True)
+            _batch_selection_checkbox("pixverse", "Video Üret seçimi", "chk_batch_pixverse")
+            st.markdown("</div>", unsafe_allow_html=True)
+        with c_btn_pixverse:
+            _clicked_pixverse = render_step_button("pixverse", get_video_generation_label(), "btn-warning", get_video_generation_loading_text())
+    else:
+        _clicked_pixverse = render_step_button("pixverse", get_video_generation_label(), "btn-warning", get_video_generation_loading_text())
+
+    if _clicked_pixverse:
         st.session_state.single_paused = False; st.session_state.single_finish_requested = False; st.session_state.single_mode = True
         st.session_state.bg_last_result = None; st.session_state.single_step = "pixverse"
         cleanup_flags(); st.session_state.status["pixverse"] = "running"; st.rerun()
 
     st.markdown('<div class="btn-primary">', unsafe_allow_html=True)
     if st.button("⚡ Tümünü Çalıştır", key="run_all", use_container_width=True, disabled=st.session_state.get("batch_mode", False) or any_running() or st.session_state.get("single_mode", False), on_click=clear_dialog_states):
-        # Seçimlere göre sıralı kuyruk oluştur
-        secs = st.session_state.ek_batch_secimler
-        queue = []
-        aktif_prompt_kaynagi = _get_prompt_runtime_source_mode()
-        prompt_source = _resolve_video_prompt_source_for_generation()
-        gorsel_motion_prompt_aktif = secs.get("gorsel_olustur", False) and prompt_source.get("kind") == "gorsel_motion"
-        if secs.get("video_indir", True) and not gorsel_motion_prompt_aktif and aktif_prompt_kaynagi == PROMPT_SOURCE_LINK and _count_prompt_links() > 0:    queue.append("download")
-        if secs.get("gorsel_analiz", False): queue.append("gorsel_analiz")
-        if secs.get("gorsel_klonla", False): queue.append("gorsel_klonlama")
-        skip_analyze = gorsel_motion_prompt_aktif
-        if not skip_analyze:
-            queue.append("analyze")                                              # Prompt oluştur
-            if secs.get("prompt_duzeltme", False): queue.append("prompt_duzeltme")  # Sonra düzelt
-            
-        if secs.get("gorsel_olustur", False): queue.append("gorsel_olustur")
-            
-        queue.append("pixverse")             # Video üret
-        if secs.get("video_montaj", False): queue.append("video_montaj")  # Sonra montaj
-        if secs.get("toplu_video", False): queue.append("toplu_video")    # Sonra toplu montaj
-        if secs.get("sosyal_medya", False): queue.append("sosyal_medya")  # Son adım sosyal medya paylaşımı
+        secs = _ensure_batch_selection_state()
+        queue = _build_manual_batch_queue(secs) if _is_manual_batch_selection() else _build_auto_batch_queue(secs)
+        if not queue:
+            st.session_state.batch_empty_selection_warning = True
+            st.rerun()
         st.session_state.batch_queue = queue
         st.session_state.batch_queue_idx = 0
         st.session_state.batch_mode = True; st.session_state.controls_unlocked = False
@@ -12048,6 +16709,23 @@ with left_col:
         st.session_state.durum_ozeti_suppress = True
         cleanup_flags(); st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
+
+    st.radio(
+        "Tümünü Çalıştır Modu",
+        [BATCH_RUN_MODE_AUTO, BATCH_RUN_MODE_MANUAL],
+        horizontal=True,
+        index=[BATCH_RUN_MODE_AUTO, BATCH_RUN_MODE_MANUAL].index(_get_batch_run_mode()),
+        key=BATCH_RUN_MODE_WIDGET_KEY,
+        on_change=_sync_batch_run_mode_widget,
+        disabled=is_ui_locked(),
+    )
+    if _is_manual_batch_selection():
+        _manual_order_text = _manual_batch_order_text()
+        st.caption(f"Manual sıra: {_manual_order_text}" if _manual_order_text else "Manual sıra: seçim bekliyor")
+
+    if st.session_state.get("batch_empty_selection_warning", False):
+        st.warning("Manual Seçim için en az bir işlem işaretleyin.")
+        st.session_state.batch_empty_selection_warning = False
 
     # ── KALDIĞI YERDEN DEVAM ET butonu ──
     _resume_q = st.session_state.get("batch_resume_queue", [])
@@ -12177,12 +16855,13 @@ with middle_col:
     if st.session_state.get("batch_paused", False) or st.session_state.get("single_paused", False):
         stt = {k: ("paused" if v == "running" else v) for k, v in stt.items()}
 
-    secs  = st.session_state.get("ek_batch_secimler", {})
+    secs  = _ensure_batch_selection_state()
     # Checkbox seçili olmasa bile işlem aktif çalışıyorsa gerçek durumu göster
     _ACTIVE_STS = ("running", "ok", "error", "partial", "paused")
     ga_st = stt["gorsel_analiz"]   if (secs.get("gorsel_analiz")   or stt["gorsel_analiz"]   in _ACTIVE_STS) else "idle"
     gk_st = stt["gorsel_klonlama"] if (secs.get("gorsel_klonla")   or stt["gorsel_klonlama"] in _ACTIVE_STS) else "idle"
     pd_st = stt["prompt_duzeltme"] if (secs.get("prompt_duzeltme") or stt["prompt_duzeltme"] in _ACTIVE_STS) else "idle"
+    vk_st = stt.get("video_klonla", "idle") if (secs.get("video_klonla") or stt.get("video_klonla", "idle") in _ACTIVE_STS) else "idle"
 
     def _shared_montaj_canvas_state():
         vm_selected = bool(secs.get("video_montaj"))
@@ -12228,13 +16907,13 @@ with middle_col:
     _EMJ = {"input":"📎","download":"⬇️","gorsel_analiz":"🖼️","gorsel_klonlama":"🎨",
             "analyze":"📝","prompt_duzeltme":"✏️","gorsel_olustur":"🖼️","pixverse":"🎬","video_montaj":"🎞️","sosyal_medya":"🌐"}
     _TTL = {"input":"Kaynak","download":"Video Indir","gorsel_analiz":"Gorsel Analiz",
-            "gorsel_klonlama":"Gorsel Klonla","analyze":"Prompt Olustur","prompt_duzeltme":"Prompt Duzelt","gorsel_olustur":"Gorsel Olustur","pixverse":get_video_generation_title().replace("Ü", "U").replace("ü", "u").replace("Ş", "S").replace("ş", "s").replace("İ", "I").replace("ı", "i").replace("Ö", "O").replace("ö", "o").replace("Ç", "C").replace("ç", "c"),"video_montaj":"Video Montaj","sosyal_medya":"Sosyal Medya Paylasim"}
+            "gorsel_klonlama":"Gorsel Klonla","analyze":"Prompt Olustur","prompt_duzeltme":"Prompt Duzelt","gorsel_olustur":"Gorsel Olustur","pixverse":get_workflow_video_generation_title().replace("Ü", "U").replace("ü", "u").replace("Ş", "S").replace("ş", "s").replace("İ", "I").replace("ı", "i").replace("Ö", "O").replace("ö", "o").replace("Ç", "C").replace("ç", "c"),"video_montaj":"Video Montaj","sosyal_medya":"Sosyal Medya Paylasim"}
     _TTL2= {"input":"Kaynak","download":"Video İndir","gorsel_analiz":"Görsel Analiz",
-            "gorsel_klonlama":"Görsel Klonla","analyze":"Prompt Oluştur","prompt_duzeltme":"Prompt Düzelt","gorsel_olustur":f"{st.session_state.settings.get('gorsel_model', 'Nano Banana 2')} Görsel Oluştur","pixverse":get_video_generation_title(),"video_montaj":"Video Montaj","sosyal_medya":"Sosyal Medya Paylaşım"}
+            "gorsel_klonlama":"Görsel Klonla","analyze":"Prompt Oluştur","prompt_duzeltme":"Prompt Düzelt","gorsel_olustur":f"{st.session_state.settings.get('gorsel_model', 'Nano Banana 2')} Görsel Oluştur","pixverse":get_workflow_video_generation_title(),"video_montaj":"Video Montaj","sosyal_medya":"Sosyal Medya Paylaşım"}
     _SUB = {"input":get_link_canvas_subtitle(stt),"download":"Sunucuya indir","gorsel_analiz":"Görselleri analiz et",
-            "gorsel_klonlama":"Görseli klonla","analyze":"Prompt & Analiz","prompt_duzeltme":"Promptu düzelt","gorsel_olustur":"Görsel ve Hareketlendirme üret","pixverse":get_video_generation_canvas_subtitle(),"video_montaj":"Videoları birleştir","sosyal_medya":"Paylaşımı planla ve yayınla"}
+            "gorsel_klonlama":"Görseli klonla","analyze":"Prompt & Analiz","prompt_duzeltme":"Promptu düzelt","gorsel_olustur":"Görsel ve Hareketlendirme üret","pixverse":get_workflow_video_generation_canvas_subtitle(),"video_montaj":"Videoları birleştir","sosyal_medya":"Paylaşımı planla ve yayınla"}
     _STS = {"input":get_link_canvas_status(stt),"download":stt["download"],"gorsel_analiz":ga_st,
-            "gorsel_klonlama":gk_st,"analyze":stt["analyze"],"prompt_duzeltme":pd_st,"gorsel_olustur":go_st,"pixverse":stt["pixverse"],"video_montaj":vm_st,
+            "gorsel_klonlama":gk_st,"analyze":stt["analyze"],"prompt_duzeltme":pd_st,"gorsel_olustur":go_st,"pixverse":(vk_st if vk_st in _ACTIVE_STS else stt["pixverse"]),"video_montaj":vm_st,
             "sosyal_medya":(stt["sosyal_medya"] if (secs.get("sosyal_medya") or stt["sosyal_medya"] in _ACTIVE_STS) else "idle")}
 
     if montaj_canvas_mode == "toplu_video":
@@ -12243,11 +16922,14 @@ with middle_col:
         _TTL2["video_montaj"] = "Toplu Video Montaj"
         _SUB["video_montaj"] = "Toplu varyasyon montajı oluştur"
 
+    _manual_canvas_mode = _is_manual_batch_selection()
     _DIS = {
         "gorsel_analiz":  not secs.get("gorsel_analiz")  and stt["gorsel_analiz"]   not in _ACTIVE_STS,
         "gorsel_klonlama":not secs.get("gorsel_klonla")  and stt["gorsel_klonlama"] not in _ACTIVE_STS,
+        "analyze":        _manual_canvas_mode and not secs.get("analyze") and stt["analyze"] not in _ACTIVE_STS,
         "prompt_duzeltme":not secs.get("prompt_duzeltme")and stt["prompt_duzeltme"] not in _ACTIVE_STS,
         "gorsel_olustur": not secs.get("gorsel_olustur") and go_st not in _ACTIVE_STS,
+        "pixverse":       _manual_canvas_mode and not secs.get("pixverse") and _STS["pixverse"] not in _ACTIVE_STS,
         "video_montaj":   not (secs.get("video_montaj") or secs.get("toplu_video")) and stt["video_montaj"] not in _ACTIVE_STS and stt["toplu_video"] not in _ACTIVE_STS,
         "toplu_video":    not secs.get("toplu_video")    and stt["toplu_video"]     not in _ACTIVE_STS,
         "sosyal_medya":   not secs.get("sosyal_medya")   and stt["sosyal_medya"]    not in _ACTIVE_STS,
@@ -12290,7 +16972,7 @@ with middle_col:
         "pixverse":       _klasor_dolu(cfg.get("prompt_dir", "")) or _txt_dolu(cfg.get("video_prompt_links_file", "")),
         "video_montaj":   _klasor_dolu(cfg.get("video_output_dir", "")) or _klasor_dolu(cfg.get("klon_video_dir", "")),
         "toplu_video":    _klasor_dolu(cfg.get("video_output_dir", "")) or _klasor_dolu(cfg.get("klon_video_dir", "")),
-        "sosyal_medya":   _klasor_dolu(cfg.get("video_montaj_output_dir", "")) or _klasor_dolu(cfg.get("toplu_video_output_dir", "")) or _klasor_dolu(cfg.get("video_output_dir", "")),
+        "sosyal_medya":   _klasor_dolu(cfg.get("video_montaj_output_dir", "")) or _klasor_dolu(cfg.get("toplu_video_output_dir", "")) or _klasor_dolu(cfg.get("video_output_dir", "")) or _klasor_dolu(cfg.get("klon_video_dir", "")),
     }
 
     def _nd(nid):
@@ -12673,6 +17355,7 @@ with right_col:
         s["kling30_script"] = st.text_input("🎬 Kling 3.0 Script:", s.get("kling30_script",""), on_change=clear_dialog_states)
         s["klingo3_script"] = st.text_input("🎬 Kling O3 Script:", s.get("klingo3_script",""), on_change=clear_dialog_states)
         s["seedance20_script"] = st.text_input("🎬 Seedance 2.0 Script:", s.get("seedance20_script",""), on_change=clear_dialog_states)
+        s["happy_horse_script"] = st.text_input("🎬 Happy Horse 1.0 Script:", s.get("happy_horse_script",""), on_change=clear_dialog_states)
         s["veo31_script"] = st.text_input("🎬 Veo 3.1 Script:", s.get("veo31_script",""), on_change=clear_dialog_states)
         s["grok_script"] = st.text_input("🎬 Grok Script:", s.get("grok_script",""), on_change=clear_dialog_states)
         s["v56_script"] = st.text_input("🎬 PixVerse V6 Script:", s.get("v56_script",""), on_change=clear_dialog_states)
@@ -12764,6 +17447,19 @@ with right_col:
             cleanup_flags(); cleanup_state_files(); st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
+    shutdown_left, shutdown_mid, shutdown_right = st.columns([1, 2, 1])
+    with shutdown_mid:
+        st.markdown('<div class="btn-purple">', unsafe_allow_html=True)
+        if st.button("❌ Sistemi Kapat", key="shutdown_panel_btn", use_container_width=True):
+            request_panel_shutdown()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.session_state.get("panel_shutdown_requested", False):
+        st.markdown(
+            '<div class="panel-shutdown-notice">Sistem kapatiliyor. Bu pencere birkac saniye icinde baglantiyi kapatacak.</div>',
+            unsafe_allow_html=True,
+        )
+
     # ---- VIDEO ÜRETME KREDİSİ — state temizleme ----
     # Grace period: başlatmadan hemen sonra bg_is_running() kısa süre False dönse bile state'i silme
     _kredi_kazan_start_ts = st.session_state.get("kredi_kazan_start_ts", 0.0)
@@ -12771,17 +17467,15 @@ with right_col:
     _kredi_kazan_grace_ok = (time.time() - _kredi_kazan_start_ts) > 10  # 10 saniye grace period
     _kredi_cek_grace_ok = (time.time() - _kredi_cek_start_ts) > 10
     if st.session_state.get("kredi_kazan_running", False) and not bg_is_running() and _kredi_kazan_grace_ok:
-        st.session_state.kredi_kazan_running = False
-        st.session_state.kredi_kazan_paused = False
-        if not st.session_state.get("kredi_kazan_finish", False):
+        _kredi_kazan_finished_by_user = st.session_state.get("kredi_kazan_finish", False)
+        _clear_kredi_runtime_state()
+        if not _kredi_kazan_finished_by_user:
             log("[INFO] Kredi kazanma işlemi tamamlandı.")
-        st.session_state.kredi_kazan_finish = False
     if st.session_state.get("kredi_cek_running", False) and not bg_is_running() and _kredi_cek_grace_ok:
-        st.session_state.kredi_cek_running = False
-        st.session_state.kredi_cek_paused = False
-        if not st.session_state.get("kredi_cek_finish", False):
+        _kredi_cek_finished_by_user = st.session_state.get("kredi_cek_finish", False)
+        _clear_kredi_runtime_state()
+        if not _kredi_cek_finished_by_user:
             log("[INFO] Kredi çekme işlemi tamamlandı.")
-        st.session_state.kredi_cek_finish = False
 
 
 # --- PATCH_DIALOG_ROUTER_V1 ---
@@ -12806,6 +17500,19 @@ def gorsel_olustur_dialog():
         save_settings(st.session_state.settings)
         st.session_state.ek_dialog_open = "gorsel_olustur"
         st.rerun()
+
+    transition_state = _load_transition_ui_state()
+    stored_go_transition = bool(transition_state.get("gorsel_olustur_transition_enabled", False))
+    go_transition_enabled = st.checkbox(
+        "Start End Frame (Transition)",
+        value=stored_go_transition,
+        key="go_transition_toggle",
+        help="Açıkken her görev için start ve end frame olacak şekilde iki görsel promptu kaydedilir.",
+    )
+    if go_transition_enabled != stored_go_transition:
+        _save_transition_ui_state({"gorsel_olustur_transition_enabled": go_transition_enabled})
+    if go_transition_enabled:
+        st.caption("Bu modda her görev için iki görsel üretilir ve aynı klasöre start.png / end.png olarak kaydedilir.")
     
     stiller = ["Yok", "Gerçekçi", "Sinematik", "Cartoon", "2D", "Pixel Art", "Anime"]
     
@@ -12831,11 +17538,20 @@ def gorsel_olustur_dialog():
         
         for i in range(st.session_state.go_gorsel_count):
             with st.expander(f"Görsel {i+1}", expanded=True):
-                v_gp = st.text_area("Görsel Oluşturma Promptu", value=st.session_state.get(f"go_gp_val_{i}", ""), key=f"go_gp_{i}")
+                start_prompt_label = "Start Frame Promptu" if go_transition_enabled else "Görsel Oluşturma Promptu"
+                v_gp = st.text_area(start_prompt_label, value=st.session_state.get(f"go_gp_val_{i}", ""), key=f"go_gp_{i}")
                 if v_gp != st.session_state.get(f"go_gp_val_{i}", ""): st.session_state[f"go_gp_val_{i}"] = v_gp
                 
-                s_gs = st.selectbox("Görsel Türü", stiller, index=stiller.index(st.session_state.get(f"go_gs_val_{i}", "Yok")) if st.session_state.get(f"go_gs_val_{i}", "Yok") in stiller else 0, key=f"go_gs_{i}")
+                start_style_label = "Start Frame Türü" if go_transition_enabled else "Görsel Türü"
+                s_gs = st.selectbox(start_style_label, stiller, index=stiller.index(st.session_state.get(f"go_gs_val_{i}", "Yok")) if st.session_state.get(f"go_gs_val_{i}", "Yok") in stiller else 0, key=f"go_gs_{i}")
                 if s_gs != st.session_state.get(f"go_gs_val_{i}", "Yok"): st.session_state[f"go_gs_val_{i}"] = s_gs
+
+                if go_transition_enabled:
+                    v_ep = st.text_area("End Frame Promptu", value=st.session_state.get(f"go_ep_val_{i}", ""), key=f"go_ep_{i}")
+                    if v_ep != st.session_state.get(f"go_ep_val_{i}", ""): st.session_state[f"go_ep_val_{i}"] = v_ep
+
+                    s_es = st.selectbox("End Frame Türü", stiller, index=stiller.index(st.session_state.get(f"go_es_val_{i}", "Yok")) if st.session_state.get(f"go_es_val_{i}", "Yok") in stiller else 0, key=f"go_es_{i}")
+                    if s_es != st.session_state.get(f"go_es_val_{i}", "Yok"): st.session_state[f"go_es_val_{i}"] = s_es
                 
                 st.markdown("---")
                 v_vp = st.text_area("Video Üret (Hareketlendirme) Promptu", value=st.session_state.get(f"go_vp_val_{i}", ""), key=f"go_vp_{i}")
@@ -12868,11 +17584,20 @@ def gorsel_olustur_dialog():
             for i, item in enumerate(active_items):
                 baslik = f"{item['tip']} {item['index']}"
                 with st.expander(baslik, expanded=True):
-                    v_vid_gp = st.text_area("Görsel Oluşturma Promptu", value=st.session_state.get(f"go_vid_gp_val_{i}", ""), key=f"go_vid_gp_{i}")
+                    start_prompt_label = "Start Frame Promptu" if go_transition_enabled else "Görsel Oluşturma Promptu"
+                    v_vid_gp = st.text_area(start_prompt_label, value=st.session_state.get(f"go_vid_gp_val_{i}", ""), key=f"go_vid_gp_{i}")
                     if v_vid_gp != st.session_state.get(f"go_vid_gp_val_{i}", ""): st.session_state[f"go_vid_gp_val_{i}"] = v_vid_gp
                     
-                    s_vid_gs = st.selectbox("Görsel Türü", stiller, index=stiller.index(st.session_state.get(f"go_vid_gs_val_{i}", "Yok")) if st.session_state.get(f"go_vid_gs_val_{i}", "Yok") in stiller else 0, key=f"go_vid_gs_{i}")
+                    start_style_label = "Start Frame Türü" if go_transition_enabled else "Görsel Türü"
+                    s_vid_gs = st.selectbox(start_style_label, stiller, index=stiller.index(st.session_state.get(f"go_vid_gs_val_{i}", "Yok")) if st.session_state.get(f"go_vid_gs_val_{i}", "Yok") in stiller else 0, key=f"go_vid_gs_{i}")
                     if s_vid_gs != st.session_state.get(f"go_vid_gs_val_{i}", "Yok"): st.session_state[f"go_vid_gs_val_{i}"] = s_vid_gs
+
+                    if go_transition_enabled:
+                        v_vid_ep = st.text_area("End Frame Promptu", value=st.session_state.get(f"go_vid_ep_val_{i}", ""), key=f"go_vid_ep_{i}")
+                        if v_vid_ep != st.session_state.get(f"go_vid_ep_val_{i}", ""): st.session_state[f"go_vid_ep_val_{i}"] = v_vid_ep
+
+                        s_vid_es = st.selectbox("End Frame Türü", stiller, index=stiller.index(st.session_state.get(f"go_vid_es_val_{i}", "Yok")) if st.session_state.get(f"go_vid_es_val_{i}", "Yok") in stiller else 0, key=f"go_vid_es_{i}")
+                        if s_vid_es != st.session_state.get(f"go_vid_es_val_{i}", "Yok"): st.session_state[f"go_vid_es_val_{i}"] = s_vid_es
 
     st.markdown("---")
     kaliteler = ["Standart", "Yüksek", "Maksimum"]
@@ -12896,13 +17621,10 @@ def gorsel_olustur_dialog():
     with s1:
         st.markdown('<div class="btn-secondary">', unsafe_allow_html=True)
         if st.button("💾 Kaydet", use_container_width=True):
-            st.success("Tüm promptlar ilgili klasörlere başarıyla kaydedildi.")
             # Modeli kaydet (ki run edince arka planda doğru modeli okusun)
             st.session_state.settings["gorsel_model"] = secili_model
             save_settings(st.session_state.settings)
-            
-            import time
-            
+
             gorsel_prompt_dir = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görsel Prompt"
             video_prompt_dir  = r"C:\Users\User\Desktop\Otomasyon\Görsel\Görsel Hareklendirme Prompt"
             os.makedirs(gorsel_prompt_dir, exist_ok=True)
@@ -12911,10 +17633,13 @@ def gorsel_olustur_dialog():
             count = st.session_state.go_gorsel_count if mode == "Görsel" else st.session_state.go_vid_count
             prefix = "go" if mode == "Görsel" else "go_vid"
             has_motion_prompt = False
+            validation_errors = []
             
             for i in range(count):
                 g_p = st.session_state.get(f"{prefix}_gp_{i}", "").strip()
                 g_s = st.session_state.get(f"{prefix}_gs_{i}", "Yok")
+                e_p = st.session_state.get(f"{prefix}_ep_{i}", "").strip() if go_transition_enabled else ""
+                e_s = st.session_state.get(f"{prefix}_es_{i}", "Yok") if go_transition_enabled else "Yok"
                 if prefix == "go":
                     v_p = st.session_state.get(f"{prefix}_vp_{i}", "").strip()
                     v_s = st.session_state.get(f"{prefix}_vs_{i}", "Yok")
@@ -12942,10 +17667,33 @@ def gorsel_olustur_dialog():
                     return raw_text
                     
                 final_g_p = get_full_prompt(g_p, g_s)
+                final_e_p = get_full_prompt(e_p, e_s)
                 final_v_p = get_full_prompt(v_p, v_s)
-                
-                with open(os.path.join(gp_sub, "gorsel_prompt.txt"), "w", encoding="utf-8") as f:
-                    f.write(final_g_p)
+
+                if go_transition_enabled and (not final_g_p or not final_e_p):
+                    validation_errors.append(f"{i+1}. görev için Start ve End prompt alanları dolu olmalı.")
+                    continue
+
+                legacy_prompt_path = os.path.join(gp_sub, "gorsel_prompt.txt")
+                start_prompt_path = os.path.join(gp_sub, "start_prompt.txt")
+                end_prompt_path = os.path.join(gp_sub, "end_prompt.txt")
+
+                if go_transition_enabled:
+                    for old_path in (legacy_prompt_path,):
+                        if os.path.exists(old_path):
+                            try: os.remove(old_path)
+                            except Exception: pass
+                    with open(start_prompt_path, "w", encoding="utf-8") as f:
+                        f.write(final_g_p)
+                    with open(end_prompt_path, "w", encoding="utf-8") as f:
+                        f.write(final_e_p)
+                else:
+                    for old_path in (start_prompt_path, end_prompt_path):
+                        if os.path.exists(old_path):
+                            try: os.remove(old_path)
+                            except Exception: pass
+                    with open(legacy_prompt_path, "w", encoding="utf-8") as f:
+                        f.write(final_g_p)
                     
                 if not v_p:
                     if os.path.exists(vp_sub): shutil.rmtree(vp_sub)
@@ -12953,6 +17701,11 @@ def gorsel_olustur_dialog():
                     os.makedirs(vp_sub, exist_ok=True)
                     with open(os.path.join(vp_sub, "prompt.txt"), "w", encoding="utf-8") as f:
                         f.write(final_v_p)
+
+            if validation_errors:
+                st.error("Transition kaydı tamamlanamadı. " + " | ".join(validation_errors))
+                st.markdown('</div>', unsafe_allow_html=True)
+                return
             
             motion_prompt_active = bool(mode == "Görsel" and has_motion_prompt)
             st.session_state["go_motion_prompt_saved"] = motion_prompt_active
@@ -12960,10 +17713,13 @@ def gorsel_olustur_dialog():
             st.session_state.settings["gorsel_motion_prompt_active"] = motion_prompt_active
             save_settings(st.session_state.settings)
             _save_gorsel_olustur_state(mode, motion_prompt_active)
+            _save_transition_ui_state({"gorsel_olustur_transition_enabled": go_transition_enabled})
             if motion_prompt_active:
                 log("[INFO] Görsel hareketlendirme promptları kaydedildi. Video Üret görsel prompt klasörünü kullanacak.")
             else:
                 log("[INFO] Görsel hareketlendirme promptu aktif değil. Video Üret standart Prompt klasörünü kullanacak.")
+            if go_transition_enabled:
+                log("[INFO] Görsel Oluştur transition modu aktif. Start/End promptları kaydedildi.")
                          
             st.session_state["go_saved"] = True
             st.session_state.ek_dialog_open = "gorsel_olustur"
@@ -12973,7 +17729,7 @@ def gorsel_olustur_dialog():
     with s2:
         st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
         if st.button("🗑️ Temizle", use_container_width=True):
-            keys_to_del = [k for k in st.session_state.keys() if k.startswith(("go_gp", "go_gs", "go_vp", "go_vs", "go_vid"))]
+            keys_to_del = [k for k in st.session_state.keys() if k.startswith(("go_gp", "go_gs", "go_ep", "go_es", "go_vp", "go_vs", "go_vid"))]
             for k in keys_to_del:
                 del st.session_state[k]
             st.session_state.go_gorsel_count = 1
@@ -12982,6 +17738,7 @@ def gorsel_olustur_dialog():
             st.session_state.settings["gorsel_motion_prompt_active"] = False
             save_settings(st.session_state.settings)
             _save_gorsel_olustur_state(st.session_state.get("go_mode_val", ""), False)
+            _save_transition_ui_state({"gorsel_olustur_transition_enabled": False})
             st.session_state.ek_dialog_open = "gorsel_olustur"
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
@@ -13022,6 +17779,305 @@ def gorsel_olustur_dialog():
         st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
+
+@st.dialog("🎬 Video Klonla", width="large")
+def video_klonla_dialog():
+    state = _load_video_klonla_state()
+    st.subheader("Video Klonla")
+    mode = st.radio("İşlem Modu", ["Video", "Klon"], horizontal=True, index=0 if str(state.get("mode", "Video")) == "Video" else 1, key="vk_mode_widget")
+    clone_model = st.selectbox("Klon Modeli", ["Motion Control", "Modify"], index=0 if str(state.get("clone_model", "Motion Control")) == "Motion Control" else 1, key="vk_model_widget")
+
+    st.markdown("**Videoları seçin:**")
+    uploaded_videos = st.file_uploader(
+        "Videoları seçin",
+        type=["mp4", "mov", "avi", "mkv", "webm", "m4v"],
+        accept_multiple_files=True,
+        key="vk_video_upload",
+        label_visibility="collapsed",
+    )
+    saved_direct_videos = _video_klonla_saved_direct_video_paths(state)
+    if saved_direct_videos:
+        st.caption("Kaydedilmiş videolar: " + ", ".join(os.path.basename(p) for p in saved_direct_videos))
+    st.caption("Bilgisayarınızdan video yüklerseniz sadece bu listedeki videolar için görev oluşturulur. Boş bırakırsanız aktif kaynak sırası otomatik kullanılır.")
+
+    batch_secs = st.session_state.get("ek_batch_secimler", {}) or {}
+    image_owner = "batch" if any(batch_secs.get(key, False) for key in ("gorsel_analiz", "gorsel_klonla", "gorsel_olustur", "video_klonla")) else "single"
+    image_entries = _prioritize_video_klonla_internal_images(_list_video_klonla_internal_images(), image_owner)
+    image_label_map = {item["label"]: item["path"] for item in image_entries}
+    reverse_image_label_map = {item["path"]: item["label"] for item in image_entries}
+    task_targets = _video_klonla_build_task_targets(
+        uploaded_files=uploaded_videos,
+        saved_paths=None if uploaded_videos else saved_direct_videos,
+    )
+    task_inputs = {}
+    configured_count = 0
+
+    if clone_model == "Motion Control":
+        st.info("Motion Control modunda her kaynak için ayrı referans görsel kaydedilir. Sistem içinden seçimde sıra numarası korunur.")
+    else:
+        st.info("Modify modunda her video için ayrı prompt kaydedilir. Referans görsel kullanılmaz.")
+
+    if not task_targets:
+        source_mode = _get_prompt_runtime_source_mode()
+        if source_mode == PROMPT_SOURCE_ADDED_VIDEO:
+            st.warning("Henüz Eklenen Video kaynağı bulunamadı. Önce 🎞️ Video Ekle bölümünden video ekleyin.")
+        elif source_mode in {PROMPT_SOURCE_LINK, PROMPT_SOURCE_DOWNLOADED_VIDEO}:
+            st.warning("Henüz Link / İndirilen Video kaynağı bulunamadı. Önce 📎 Video Listesi Ekle veya ⬇️ Video İndir adımlarını kullanın.")
+        else:
+            st.warning("Henüz görev oluşturulacak video kaynağı bulunamadı.")
+    else:
+        st.caption(f"{len(task_targets)} kaynak bulundu. Her kaynak için ayrı Video Klonla ayarı kaydedebilirsiniz.")
+
+    for target in task_targets:
+        task_state = _video_klonla_resolve_task_state(state, target)
+        target_key = str(target.get("key") or "").strip()
+        current_label = str(target.get("label") or f"Video {target.get('no') or ''}").strip()
+        source_kind = str(target.get("source_kind") or "").strip()
+        video_path = str(target.get("video_path") or "").strip()
+        has_video_file = bool(video_path and os.path.exists(video_path))
+        status_icon = "✅" if _video_klonla_target_has_config_for_model(clone_model, task_state, target, image_entries) else "⬜"
+
+        with st.expander(f"{status_icon} {current_label}", expanded=False):
+            if has_video_file:
+                st.caption(f"Video: {os.path.basename(video_path)}")
+            elif str(target.get("video_name") or "").strip():
+                st.caption(f"Seçilen kaynak: {str(target.get('video_name') or '').strip()}")
+            elif source_kind == "placeholder_link":
+                st.caption("Gerçek link veya video eklendiğinde bu alan otomatik dolacak.")
+            elif source_kind == "link":
+                st.caption("Bu kaynak henüz indirilen videoya dönüşmedi. Ayar kaydolur; indirme tamamlanınca aynı sıra numarasıyla çalışır.")
+            else:
+                st.caption("Bu kaynak için video dosyası henüz görünmüyor. Yine de ayarı kaydedebilirsiniz.")
+
+            if clone_model == "Modify":
+                prompt_value = st.text_area(
+                    f"{current_label} istemi",
+                    value=str(task_state.get("modify_prompt") or ""),
+                    key=f"vk_prompt_{target_key}",
+                    height=120,
+                    placeholder=f"{current_label} için modify istemini yazın",
+                )
+                task_inputs[target_key] = {
+                    "modify_prompt": prompt_value,
+                    "selected_image": str(task_state.get("selected_image") or ""),
+                    "uploaded_image": None,
+                    "use_system_images": bool(task_state.get("use_system_images", True)),
+                }
+                is_configured = bool(str(prompt_value or "").strip())
+                if is_configured:
+                    configured_count += 1
+                else:
+                    st.caption("Bu görev çalıştırılmaz; önce bir prompt girin.")
+            else:
+                referans_turleri = ["Sistem İçinden", "Özel Görsel"]
+                referans_idx = 0 if bool(task_state.get("use_system_images", True)) else 1
+                referans_turu = st.radio(
+                    f"{current_label} referans kaynağı",
+                    referans_turleri,
+                    index=referans_idx,
+                    horizontal=True,
+                    key=f"vk_ref_mode_{target_key}",
+                    label_visibility="collapsed",
+                )
+                use_system_images = referans_turu == "Sistem İçinden"
+                selected_image_path = ""
+                uploaded_image = None
+                preview_item = None
+                preview_caption = ""
+                is_configured = False
+
+                if use_system_images:
+                    planned_image_info = _video_klonla_batch_planned_image_info(target, owner=image_owner)
+                    auto_label = f"Otomatik sıra ({planned_image_info.get('label')})" if planned_image_info else "Otomatik sıra"
+                    options = [auto_label] + [item["label"] for item in image_entries]
+                    selected_label_default = reverse_image_label_map.get(str(task_state.get("selected_image") or "").strip(), "")
+                    selected_idx = options.index(selected_label_default) if selected_label_default in options else 0
+                    selected_label = st.selectbox(
+                        f"{current_label} sistem görseli",
+                        options,
+                        index=selected_idx,
+                        key=f"vk_system_image_{target_key}",
+                    ) if image_entries else auto_label
+                    if selected_label != auto_label:
+                        selected_image_path = image_label_map.get(selected_label, "")
+
+                    system_image_info = _video_klonla_resolve_system_image_info(
+                        target,
+                        selected_image_path,
+                        image_entries,
+                        owner=image_owner,
+                    )
+                    if system_image_info.get("path") and os.path.exists(str(system_image_info.get("path") or "").strip()):
+                        preview_item = str(system_image_info.get("path") or "").strip()
+                        preview_caption = str(system_image_info.get("label") or os.path.basename(preview_item)).strip()
+
+                    if system_image_info.get("available"):
+                        is_configured = True
+                        configured_count += 1
+                        if system_image_info.get("planned"):
+                            st.caption(f"Eşleşme: {current_label} -> {system_image_info.get('label')}")
+                            if system_image_info.get("detail"):
+                                st.caption(str(system_image_info.get("detail") or "").strip())
+                        elif not preview_item:
+                            st.caption(f"Kullanılacak görsel: {system_image_info.get('label')}")
+                    else:
+                        if image_owner == "batch":
+                            st.caption("Tümünü Çalıştır için önce Görsel Analiz veya Görsel Klonla tarafında bu sıraya uygun görsel oluşmalı.")
+                        else:
+                            st.caption("Sistem içinde kullanılacak görsel bulunamadı. Önce Görsel Klonla / Görsel Analiz / Görsel Oluştur tarafında görsel kaydedin.")
+                else:
+                    uploaded_image = st.file_uploader(
+                        f"{current_label} özel görseli",
+                        type=["png", "jpg", "jpeg", "webp", "bmp"],
+                        accept_multiple_files=False,
+                        key=f"vk_image_upload_{target_key}",
+                    )
+                    existing_uploaded_image = str(task_state.get("uploaded_image") or "").strip()
+                    if uploaded_image is not None:
+                        preview_item = uploaded_image
+                        preview_caption = "Yeni yüklenen özel görsel"
+                        is_configured = True
+                        configured_count += 1
+                    elif existing_uploaded_image and os.path.exists(existing_uploaded_image):
+                        preview_item = existing_uploaded_image
+                        preview_caption = "Kaydedilmiş özel görsel"
+                        is_configured = True
+                        configured_count += 1
+                    else:
+                        st.caption("Bu görev çalıştırılmaz; önce özel referans görseli yükleyin.")
+
+                if preview_item is not None:
+                    st.image(preview_item, width=180, caption=preview_caption)
+
+                task_inputs[target_key] = {
+                    "modify_prompt": str(task_state.get("modify_prompt") or ""),
+                    "selected_image": selected_image_path,
+                    "uploaded_image": uploaded_image,
+                    "use_system_images": use_system_images,
+                }
+
+                if use_system_images and not is_configured:
+                    st.caption("Bu görev için sıra numarasına uygun sistem görseli bekleniyor.")
+
+    if task_targets:
+        pending_count = max(0, len(task_targets) - configured_count)
+        renk = "limegreen" if pending_count == 0 else ("orange" if configured_count > 0 else "tomato")
+        st.markdown(
+            f'<div style="background:rgba(255,255,255,0.05);border-radius:10px;padding:10px 14px;margin:12px 0;">'
+            f'🎬 <b>Video Klonla Görevleri</b> &nbsp;|&nbsp; {len(task_targets)} kaynak &nbsp;|&nbsp; '
+            f'<span style="color:limegreen">✅ {configured_count} hazır</span> &nbsp;|&nbsp; '
+            f'<span style="color:{renk}">⬜ {pending_count} eksik</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.caption("Motion Control otomatik v5.6 / 720p, Modify otomatik v5.5 / 720p kullanır.")
+
+    def _vk_save_payload():
+        saved_uploaded_videos = _video_klonla_persist_uploaded_files(uploaded_videos, "videos") if uploaded_videos else saved_direct_videos
+        tasks_payload = dict(_video_klonla_tasks_dict(state))
+        resolved_targets = _video_klonla_build_task_targets(saved_paths=saved_uploaded_videos)
+        first_task_payload = None
+
+        for target in resolved_targets:
+            target_key = str(target.get("key") or "").strip()
+            current_task_state = _video_klonla_resolve_task_state(state, target)
+            form_state = task_inputs.get(target_key, {})
+            task_payload = {
+                "modify_prompt": str(current_task_state.get("modify_prompt") or "").strip(),
+                "selected_image": str(current_task_state.get("selected_image") or "").strip(),
+                "uploaded_image": str(current_task_state.get("uploaded_image") or "").strip(),
+                "use_system_images": bool(current_task_state.get("use_system_images", True)),
+                "label": str(target.get("label") or "").strip(),
+                "source_group": str(target.get("source_group") or "").strip(),
+                "source_no": int(target.get("no") or 0),
+            }
+
+            if clone_model == "Modify":
+                task_payload["modify_prompt"] = str(form_state.get("modify_prompt") or "").strip()
+            else:
+                task_payload["use_system_images"] = bool(form_state.get("use_system_images", task_payload["use_system_images"]))
+                if task_payload["use_system_images"]:
+                    task_payload["selected_image"] = str(form_state.get("selected_image") or "").strip()
+                    task_payload["uploaded_image"] = ""
+                else:
+                    uploaded_image = form_state.get("uploaded_image")
+                    if uploaded_image is not None:
+                        saved_uploaded_image_list = _video_klonla_persist_uploaded_files(
+                            uploaded_image,
+                            os.path.join("images", _video_klonla_safe_name(target_key)),
+                        )
+                        saved_uploaded_image = saved_uploaded_image_list[0] if saved_uploaded_image_list else ""
+                    else:
+                        saved_uploaded_image = str(current_task_state.get("uploaded_image") or "").strip()
+                    task_payload["selected_image"] = ""
+                    task_payload["uploaded_image"] = saved_uploaded_image if saved_uploaded_image and os.path.exists(saved_uploaded_image) else ""
+
+            tasks_payload[target_key] = task_payload
+            if first_task_payload is None:
+                first_task_payload = dict(task_payload)
+
+        if first_task_payload is None:
+            first_task_payload = {
+                "modify_prompt": str(state.get("modify_prompt") or "").strip(),
+                "selected_image": str(state.get("selected_image") or "").strip(),
+                "uploaded_image": str(state.get("uploaded_image") or "").strip(),
+                "use_system_images": bool(state.get("use_system_images", True)),
+            }
+
+        return {
+            "mode": mode,
+            "clone_model": clone_model,
+            "modify_prompt": str(first_task_payload.get("modify_prompt") or "").strip(),
+            "selected_videos": _video_klonla_existing_paths(state.get("selected_videos")),
+            "uploaded_videos": _video_klonla_existing_paths(saved_uploaded_videos),
+            "selected_image": str(first_task_payload.get("selected_image") or "").strip(),
+            "uploaded_image": str(first_task_payload.get("uploaded_image") or "").strip() if str(first_task_payload.get("uploaded_image") or "").strip() and os.path.exists(str(first_task_payload.get("uploaded_image") or "").strip()) else "",
+            "use_system_images": bool(first_task_payload.get("use_system_images", True)),
+            "system_image_sources": ["gorsel_analiz", "gorsel_klonla", "gorsel_olustur"],
+            "motion_model": "v5.6",
+            "motion_quality": "720p",
+            "modify_model": "v5.5",
+            "modify_quality": "720p",
+            "modify_keyframe_time": 0,
+            "tasks": tasks_payload,
+        }
+
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown('<div class="btn-secondary">', unsafe_allow_html=True)
+        if st.button("💾 Kaydet", key="vk_save", use_container_width=True):
+            _save_video_klonla_state(_vk_save_payload())
+            st.session_state["video_klonla_saved"] = True
+            st.session_state.ek_dialog_open = "video_klonla"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+        if st.button("🗑️ Temizle Video Klonla", key="vk_clear", use_container_width=True):
+            _video_klonla_clear_uploads()
+            _save_video_klonla_state(_video_klonla_default_state())
+            st.session_state["video_klonla_saved"] = False
+            st.session_state.ek_dialog_open = "video_klonla"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    if st.session_state.get("video_klonla_saved"):
+        _vk_ph = st.empty(); _vk_ph.success("Kaydedildi! Artık Tümünü Çalıştır'ı başlatabilirsiniz."); time.sleep(2.0); _vk_ph.empty(); st.session_state.pop("video_klonla_saved", None)
+    st.markdown("---")
+    st.markdown('<div class="btn-success">', unsafe_allow_html=True)
+    if st.button("🚀 Video Klonla", key="vk_start", use_container_width=True, disabled=st.session_state.get("batch_mode", False) or any_running()):
+        _save_video_klonla_state(_vk_save_payload())
+        st.session_state.single_paused = False; st.session_state.single_finish_requested = False; st.session_state.single_mode = True; st.session_state.bg_last_result = None; st.session_state.single_step = "video_klonla"; cleanup_flags(); st.session_state.status["video_klonla"] = "running"; st.session_state.ek_dialog_open = "video_klonla"; st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+    render_dialog_single_controls(step_match="video_klonla", prefix="dlg_video_klonla")
+    st.markdown("---")
+    st.markdown('<div class="btn-info">', unsafe_allow_html=True)
+    if st.button("⬅️ Geri", key="vk_back", use_container_width=True):
+        st.session_state.ek_dialog_open = "menu"; st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 def _patch_render_pending_dialogs():
     if st.session_state.get("durum_ozeti_dialog_open", False):
         st.session_state.durum_ozeti_dialog_open = False
@@ -13049,8 +18105,9 @@ def _patch_render_pending_dialogs():
                 or st.session_state.get("kredi_kazan_running", False)
                 or st.session_state.get("kredi_cek_running", False)
             )
-            if not _running_now:
+            if not _running_now and not _keep_ek_dialog_open_on_rerun(hedef):
                 st.session_state.ek_dialog_open = None
+        st.session_state.pop("_ek_dialog_keepalive", None)
         if hedef == "menu":
             ek_islemler_menu_dialog()
         elif hedef == "youtube_link":
@@ -13070,6 +18127,8 @@ def _patch_render_pending_dialogs():
             prompt_duzeltme_dialog()
         elif hedef == "gorsel_olustur":
             gorsel_olustur_dialog()
+        elif hedef == "video_klonla":
+            video_klonla_dialog()
         elif hedef == "video_montaj":
             video_montaj_dialog()
         elif hedef == "toplu_video":
@@ -13098,6 +18157,7 @@ _is_any_paused = (
     st.session_state.get("kredi_kazan_paused", False)
 )
 
+# Keep polling background logs even while a dialog is open.
 if bg_is_running() and not _is_any_paused:
     time.sleep(1)
     st.rerun()

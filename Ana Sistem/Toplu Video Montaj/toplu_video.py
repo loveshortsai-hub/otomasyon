@@ -77,6 +77,7 @@ ses_efekti_klasor = os.path.join(materyal_ana_yol, "ses efekti")
 # Dosya Tanımlamaları
 baslik_dosyasi = os.path.join(materyal_ana_yol, "başlık.txt")
 log_dosyasi = os.path.join(ana_klasor, "log.txt")
+uretim_limiti_dosyasi = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma\.control\toplu_video_runtime_limit.txt"
 
 # Klasörleri oluştur
 os.makedirs(toplu_montaj_klasor, exist_ok=True)
@@ -116,6 +117,23 @@ def log_hatasi_kaydet(hata_mesaji, adim=""):
         print(f"Hata log'a kaydedildi: {log_dosyasi}")
     except Exception as e:
         print(f"Log yazma hatası: {e}")
+
+def uretim_limiti_oku(max_deger=0):
+    try:
+        if not os.path.exists(uretim_limiti_dosyasi):
+            return 0
+        with open(uretim_limiti_dosyasi, 'r', encoding='utf-8') as f:
+            raw = f.read().strip()
+        if not raw:
+            return 0
+        limit = int(float(raw.replace(',', '.')))
+        if limit <= 0:
+            return 0
+        if max_deger and max_deger > 0:
+            return min(limit, int(max_deger))
+        return limit
+    except Exception:
+        return 0
 
 def video_boyutunu_ayarla(clip, video_format="shorts"):
     """Videoyu seçilen formata uyarla"""
@@ -1656,14 +1674,14 @@ def varyasyon_klasorler_olustur_ve_montaj(VIDEO_FORMAT):
             videolar.sort() 
             mp4_dosyalar.extend(videolar)
             
-    # 2. Klon Videoları Tara ve Ekle (Append)
+    # 2. Klon Videolari Tara ve Ekle (Append)
     if os.path.exists(klon_video_kaynak_ana_yol):
         tum_klasorler_klon = os.listdir(klon_video_kaynak_ana_yol)
         hedef_klasorler_klon = []
         for isim in tum_klasorler_klon:
             tam_yol = os.path.join(klon_video_kaynak_ana_yol, isim)
-            # Regex: "Klon Video 1", "Klon Video 2" gibi klasörleri bul
-            if os.path.isdir(tam_yol) and re.match(r'^Klon Video \d+$', isim):
+            # "Klon Video 1" veya "Video 1" gibi klasorleri bul
+            if os.path.isdir(tam_yol) and re.match(r'^(?:Klon\s+)?Video \d+$', isim, re.IGNORECASE):
                 hedef_klasorler_klon.append(tam_yol)
         
         def klon_klasor_numarasi(k_yolu):
@@ -1707,6 +1725,10 @@ def varyasyon_klasorler_olustur_ve_montaj(VIDEO_FORMAT):
     
     secimler = kullanicidan_varyasyon_sec(indirilen_sayisi)
     varyasyonlar = varyasyonlari_olustur(indirilen_sayisi, secimler)
+    uretim_limiti = uretim_limiti_oku(len(varyasyonlar))
+    if uretim_limiti and len(varyasyonlar) > uretim_limiti:
+        print(f"\n[INFO] Uretim limiti uygulandi: {uretim_limiti}/{len(varyasyonlar)}")
+        varyasyonlar = varyasyonlar[:uretim_limiti]
     
     print(f"\n{'='*80}")
     print(f"📊 TOPLAM {len(varyasyonlar)} VARYASYON OLUŞTURULACAK")

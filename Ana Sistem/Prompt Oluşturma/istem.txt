@@ -84,11 +84,11 @@ SINGLE FIXED CAMERA ANGLE. DO NOT ADD ALTERNATE ANGLES.
 SINGLE ANGLE WITH PANNING/ZOOMING ONLY.
 or multiple real angles, described exactly as they appear.
 
-(F) Final Sora 2 optimized prompt
-Write one polished Sora 2 prompt in fluent American English using this order:
+(F) Final optimized prompt
+Write one polished prompt in fluent American English using this order:
 core subject, exact capture style, exact camera setup, likely device/lens feel if visually justified, exact environment, exact lighting, character positions/actions/interactions, full chronological action flow, mood and visual tone, optional visible effects only if truly present, real speech only if present.
 
-The final Sora 2 prompt must preserve the real temporal progression of the video from beginning to end.
+The final prompt must preserve the real temporal progression of the video from beginning to end.
 Do not compress multiple actions into one vague sentence.
 Preserve the real order of events exactly as they occur in the video.
 

@@ -78,6 +78,20 @@ PROMPT_EXPORT_ROOT = os.path.join(ROOT_PATH, "Prompt")
 
 # Sistem Dosyaları
 ISTEM_FILE = os.path.join(SYSTEM_PATH, "istem.txt")
+PROMPT_TEMPLATE_FILE_MAP = {
+    "original": "istem.txt",
+    "realistic": "photorealistic_real_life.txt",
+    "cinematic": "cinematic.txt",
+    "animation": "cinematic_animation.txt",
+    "anime": "anime.txt",
+}
+PROMPT_TEMPLATE_LABELS = {
+    "original": "Orjinal",
+    "realistic": "Gerçekçi",
+    "cinematic": "Sinematik",
+    "animation": "Animasyon",
+    "anime": "Anime",
+}
 APP_BASE_DIR = r"C:\Users\User\Desktop\Otomasyon\Ana Sistem\Otomasyon Çalıştırma"
 SETTINGS_CANDIDATES = [
     os.path.join(APP_BASE_DIR, ".control", "settings.local.json"),
@@ -115,6 +129,59 @@ def _api_key_oku():
     if _key:
         return _key
     return None
+
+
+def _normalize_prompt_template_key(value):
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "original": "original",
+        "orjinal": "original",
+        "orijinal": "original",
+        "istem": "original",
+        "istem.txt": "original",
+        "realistic": "realistic",
+        "gercekci": "realistic",
+        "gerçekçi": "realistic",
+        "photorealistic": "realistic",
+        "photorealistic_real_life": "realistic",
+        "photorealistic_real_life.txt": "realistic",
+        "cinematic": "cinematic",
+        "sinematik": "cinematic",
+        "cinematic.txt": "cinematic",
+        "animation": "animation",
+        "animasyon": "animation",
+        "cinematic_animation": "animation",
+        "cinematic_animation.txt": "animation",
+        "anime": "anime",
+        "anime.txt": "anime",
+    }
+    return aliases.get(raw, "original")
+
+
+def _prompt_template_key_oku():
+    for _settings_path in SETTINGS_CANDIDATES:
+        try:
+            if os.path.exists(_settings_path):
+                with open(_settings_path, "r", encoding="utf-8") as _f:
+                    _data = json.load(_f)
+                if isinstance(_data, dict):
+                    return _normalize_prompt_template_key(_data.get("prompt_template_key"))
+        except Exception:
+            pass
+    return "original"
+
+
+def _aktif_istem_dosyasi_oku():
+    key = _prompt_template_key_oku()
+    file_name = PROMPT_TEMPLATE_FILE_MAP.get(key, PROMPT_TEMPLATE_FILE_MAP["original"])
+    file_path = os.path.join(SYSTEM_PATH, file_name)
+
+    if os.path.exists(file_path):
+        return key, file_path
+
+    if key != "original":
+        print(f"⚠ Seçili istem dosyası bulunamadı: {file_name}. Orjinal istem.txt kullanılacak.")
+    return "original", ISTEM_FILE
 
 def _genai_client_olustur(key):
     return genai.Client(
@@ -327,6 +394,24 @@ def kaynak_klasorunden_videolari_topla(kok_yol):
     return videolar
 
 
+def secimden_video_numarasi_ayikla(deger):
+    metin = str(deger or "").strip()
+    if not metin:
+        return 0
+    eslesmeler = re.findall(r"(\d+)", os.path.basename(metin))
+    return int(eslesmeler[-1]) if eslesmeler else 0
+
+
+def eklenen_video_kaynak_numarasi(video_yolu):
+    yol = str(video_yolu or "").strip()
+    if not yol:
+        return 0
+    klasor_no = secimden_video_numarasi_ayikla(os.path.basename(os.path.dirname(yol)))
+    if klasor_no > 0:
+        return klasor_no
+    return secimden_video_numarasi_ayikla(os.path.basename(yol))
+
+
 def prompt_linklerini_oku():
     for aday in (LINK_SOURCE_FILE, FALLBACK_LINK_SOURCE_FILE):
         if not aday or not os.path.exists(aday):
@@ -460,12 +545,14 @@ def main():
     print(f"   State : {STATE_FILE} (Double Safety Rollback)")
     print("="*60)
 
-    istem_tam = oku(ISTEM_FILE)
+    istem_key, aktif_istem_dosyasi = _aktif_istem_dosyasi_oku()
+    istem_tam = oku(aktif_istem_dosyasi)
     if not istem_tam:
-        print("CRITICAL: istem.txt bulunamadı!")
+        print(f"CRITICAL: {os.path.basename(aktif_istem_dosyasi)} bulunamadı!")
         return
     
     print("✓ Gemini API Hazır.")
+    print(f"✓ Aktif istem şablonu: {PROMPT_TEMPLATE_LABELS.get(istem_key, 'Orjinal')} -> {os.path.basename(aktif_istem_dosyasi)}")
     
     # Cache yükle ve state_data referansını al
     state_data = state_yukle()
@@ -498,8 +585,13 @@ def main():
                     sel_down = set(selected["downloaded_videos"])
                     indirilen_videolar = [vid for vid in indirilen_videolar if os.path.basename(vid) in sel_down]
                 if isinstance(selected.get("added_videos"), list):
-                    sel_add = set(selected["added_videos"])
-                    eklenen_videolar = [vid for vid in eklenen_videolar if os.path.basename(vid) in sel_add]
+                    sel_add_raw = {str(item).strip() for item in selected["added_videos"] if str(item).strip()}
+                    sel_add_no = {secimden_video_numarasi_ayikla(item) for item in sel_add_raw}
+                    eklenen_videolar = [
+                        vid for vid in eklenen_videolar
+                        if os.path.basename(vid) in sel_add_raw
+                        or eklenen_video_kaynak_numarasi(vid) in sel_add_no
+                    ]
                 
                 if (len(_ori_links) + len(_ori_down) + len(_ori_add)) > 0 and (len(linkler) + len(indirilen_videolar) + len(eklenen_videolar)) == 0:
                     print(f"⚠ Özel seçim dosyaları bulunamadı. Ayar atlanıp ekli olan tüm içerikler işleniyor...")

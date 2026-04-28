@@ -23,6 +23,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 VIDEO_OLUSTURMA_DIR = SCRIPT_DIR.parent
 ANA_SISTEM_DIR = VIDEO_OLUSTURMA_DIR.parent
 OTOMASYON_DIR = ANA_SISTEM_DIR.parent
+if str(VIDEO_OLUSTURMA_DIR) not in sys.path:
+    sys.path.insert(0, str(VIDEO_OLUSTURMA_DIR))
+
+from pixverse_reference_image import ReferenceImagePreparationError, prepare_reference_image_for_upload
+from pixverse_prompt_utils import build_prompt_variants, extract_json_error_text, first_meaningful_line, is_sensitive_info_error_message
+from video_settings_override import load_video_settings_override_state, resolve_prompt_video_settings
 CONTROL_DIR = ANA_SISTEM_DIR / "Otomasyon Çalıştırma" / ".control"
 CONTROL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +66,9 @@ DEFAULT_MODEL = "grok-imagine"
 DEFAULT_QUALITY = "720p"
 SUBMIT_MAX_RETRIES = 3          # Görsel yükleme zaman aşımında toplam deneme sayısı
 SUBMIT_RETRY_WAIT_SECONDS = 12  # Denemeler arası bekleme süresi (sn)
+WAIT_TIMEOUT_SECONDS = 400      # İlk bekleme eşiği (PixVerse CLI timeout)
+WAIT_MAX_SECONDS = 600          # Süreç ne olursa olsun mutlak üst sınır
+DOWNLOAD_TIMEOUT_SECONDS = 180  # İndirme asılı kalırsa prompt başarısız sayılır
 
 
 class ConfigError(Exception):
@@ -121,7 +130,7 @@ def prepare_command(cmd):
     return [str(x) for x in resolved]
 
 
-def run_command(cmd, check=False, capture_output=True, text=True, cwd=None):
+def run_command(cmd, check=False, capture_output=True, text=True, cwd=None, timeout=None):
     prepared_cmd = prepare_command(cmd)
     try:
         kwargs = {
@@ -133,6 +142,8 @@ def run_command(cmd, check=False, capture_output=True, text=True, cwd=None):
         if text:
             kwargs["encoding"] = "utf-8"
             kwargs["errors"] = "replace"
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         result = subprocess.run(prepared_cmd, **kwargs)
     except FileNotFoundError as e:
         raise FileNotFoundError(
@@ -149,8 +160,6 @@ def run_command(cmd, check=False, capture_output=True, text=True, cwd=None):
             f"STDERR:\n{result.stderr}"
         )
     return result
-
-
 def start_process(cmd, cwd=None):
     prepared_cmd = prepare_command(cmd)
     try:
@@ -318,17 +327,19 @@ def prompt_oku(prompt_klasor_adi: str) -> str:
         prompt_dosya_yolu = PROMPT_ROOT / prompt_klasor_adi / PROMPT_FILE
         raw = read_text_file(prompt_dosya_yolu)
         if not raw:
-            raise ConfigError("prompt.txt boş")
+            raise ConfigError("prompt.txt bos")
 
-        # PixVerse karakter sınırı kalktığı için prompt.txt dosyasının tüm içeriği
-        # hiçbir filtreleme veya bölüm arama yapılmadan doğrudan prompt olarak gönderilir.
-        # Çok satırlı metin PixVerse CLI argüman ayrıştırmasında sorun çıkardığı için
-        # tüm satır sonları tek boşlukla değiştirilir (tek satır haline getirilir).
-        prompt_metni = " ".join(raw.split())
-        print(f"✓ Prompt okundu [tam içerik, tek satır]: {len(prompt_metni)} karakter")
-        return prompt_metni
+        prompt_varyantlari = build_prompt_variants(raw)
+        if not prompt_varyantlari:
+            raise ConfigError("prompt.txt iceriginden gecerli prompt cikartilamadi")
+
+        secilen_varyant = prompt_varyantlari[0]
+        print(f"Prompt okundu [{secilen_varyant['label']}]: {len(secilen_varyant['prompt'])} karakter")
+        for alternatif in prompt_varyantlari[1:]:
+            print(f"[INFO] Alternatif prompt hazir: {alternatif['label']} ({len(alternatif['prompt'])} karakter)")
+        return raw
     except Exception as e:
-        print(f"Prompt dosyası okuma hatası: {e}")
+        print(f"Prompt dosyasi okuma hatasi: {e}")
         return None
 
 
@@ -567,36 +578,36 @@ def build_user_error(stage: str, stdout: str = "", stderr: str = "", return_code
     clean_stdout = strip_ansi(stdout or "").strip()
     clean_stderr = strip_ansi(stderr or "").strip()
     joined = f"{clean_stdout}\n{clean_stderr}".strip()
-    data = parse_cli_json_safely(clean_stdout)
-    error_text = str(data.get("error") or "").strip()
+    data = parse_cli_json_safely(clean_stdout) or parse_cli_json_safely(clean_stderr)
+    error_text = extract_json_error_text(data)
     error_code = data.get("code")
     haystack = f"{error_text}\n{joined}".lower()
+    stage_lc = (stage or "").casefold()
 
     if error_code in AUTH_ERROR_CODES or "not logged in" in haystack or "user is not login" in haystack:
         return UserFacingError(
             status=stage,
-            reason="Oturum geçersiz veya süresi dolmuş",
-            detail="Tekrar giriş yapılmalı.",
-            result="Video Başarısız",
+            reason="Oturum gecersiz veya suresi dolmus",
+            detail="Tekrar giris yapilmali.",
+            result="Video Basarisiz",
         )
 
-    if error_code == 400018 or "cannot exceed" in haystack or "prompt too long" in haystack or "character" in haystack and "limit" in haystack:
+    if error_code == 400018 or "cannot exceed" in haystack or "prompt too long" in haystack or ("character" in haystack and "limit" in haystack):
         return UserFacingError(
             status=stage,
-            reason="Prompt karakter sınırı aşıldı",
-            detail="PixVerse tarafından prompt uzunluğu reddedildi.",
-            result="Video Başarısız",
+            reason="Prompt karakter siniri asildi",
+            detail="PixVerse tarafindan prompt uzunlugu reddedildi.",
+            result="Video Basarisiz",
         )
 
     if any(p in haystack for p in ["insufficient credit", "not enough credit", "credit balance", "payment required", "quota exceeded", "insufficient balance", "all credits have been used up", "credits have been used", "purchase credits"]):
         return UserFacingError(
             status=stage,
-            reason="Yetersiz Video Üretme Kredisi (Kredinizi Yenileyin)",
-            detail="Video üretme krediniz tükendi. Lütfen kredinizi yenileyerek tekrar deneyin.",
-            result="Video Başarısız",
+            reason="Yetersiz Video Uretme Kredisi (Kredinizi Yenileyin)",
+            detail="Video uretme krediniz tukendi. Lutfen kredinizi yenileyerek tekrar deneyin.",
+            result="Video Basarisiz",
         )
 
-    # Görsel yükleme zaman aşımı — Alibaba OSS upload timeout (60000ms)
     if (
         "responsetimeouterror" in haystack
         or "response timeout for" in haystack
@@ -604,9 +615,9 @@ def build_user_error(stage: str, stdout: str = "", stderr: str = "", return_code
     ):
         return UserFacingError(
             status=stage,
-            reason="Referans Görsel Yükleme Zaman Aşımı",
-            detail="Görsel bulut depolama alanına yüklenirken bağlantı zaman aşımına uğradı.",
-            result="Video Başarısız",
+            reason="Referans Gorsel Yukleme Zaman Asimi",
+            detail="Gorsel bulut depolama alanina yuklenirken baglanti zaman asimina ugradi.",
+            result="Video Basarisiz",
         )
 
     timeout_match = re.search(r"polling timed out after\s+(\d+)s", haystack, flags=re.IGNORECASE)
@@ -614,57 +625,72 @@ def build_user_error(stage: str, stdout: str = "", stderr: str = "", return_code
         seconds = int(timeout_match.group(1))
         return UserFacingError(
             status=stage,
-            reason="Beklenen sürede oluşturulamadı",
-            detail=f"{seconds} saniye içinde tamamlanmış sonuç alınamadı.",
+            reason="Beklenen surede olusturulamadi",
+            detail=f"{seconds} saniye icinde tamamlanmis sonuc alinamadi.",
             duration=seconds,
-            result="Video Başarısız",
+            result="Video Basarisiz",
         )
+
     generation_failed_match = re.search(r"video generation failed\s*\(status:\s*(\d+)", haystack, flags=re.IGNORECASE)
     if generation_failed_match:
         failed_status = generation_failed_match.group(1)
-        detail = "Video oluşturulamadı (Bazı aksaklıklar olmuş olabilir)"
+        detail = "Video olusturulamadi (Bazi aksakliklar olmus olabilir)"
         if failed_status == "7":
-            detail = "Video oluşturulamadı (İçerik kontrolüne takılmış olabilir)"
+            detail = "Video olusturulamadi (Icerik kontrolune takilmis olabilir)"
         return UserFacingError(
             status=stage,
-            reason="İşlem tamamlanamadı",
+            reason="Islem tamamlanamadi",
             detail=detail,
             duration=elapsed,
-            result="Video Başarısız",
+            result="Video Basarisiz",
         )
 
     if "assertion failed" in haystack:
         return UserFacingError(
             status=stage,
-            reason="PixVerse CLI iç hatası oluştu",
-            detail="Komut satırı tarafında beklenmeyen bir hata oluştu.",
-            result="Video Başarısız",
+            reason="PixVerse CLI ic hatasi olustu",
+            detail="Komut satiri tarafinda beklenmeyen bir hata olustu.",
+            result="Video Basarisiz",
         )
 
-    if stage == "Video indirme":
+    if is_sensitive_info_error_message(haystack):
+        return UserFacingError(
+            status=stage,
+            reason="Prompt hassas bilgi nedeniyle reddedildi",
+            detail=error_text or first_meaningful_line(clean_stderr) or first_meaningful_line(clean_stdout) or "PixVerse promptta hassas bilgi algiladi.",
+            result="Video Basarisiz",
+        )
+
+    if "video indirme" in stage_lc:
         return UserFacingError(
             status=stage,
             reason="Video indirilemedi",
-            detail="Video oluşturuldu ancak indirme tamamlanamadı.",
-            result="İndirme Başarısız",
+            detail="Video olusturuldu ancak indirme tamamlanamadi.",
+            result="Indirme Basarisiz",
         )
 
-    if stage == "Video oluşturma sonucu":
+    if "sonuc" in stage_lc:
         return UserFacingError(
             status=stage,
-            reason="Sonuç verisi okunamadı",
-            detail="Oluşturma bitti ancak sonuç bilgisi çözümlenemedi.",
+            reason="Sonuc verisi okunamadi",
+            detail="Olusturma bitti ancak sonuc bilgisi cozumlenemedi.",
             duration=elapsed,
             result="Video Durumu Belirsiz",
         )
 
-    generic_detail = error_text or clean_stderr or clean_stdout or "Beklenmeyen bir hata oluştu."
+    generic_detail = error_text or first_meaningful_line(clean_stderr) or first_meaningful_line(clean_stdout)
+    if not generic_detail:
+        if any(str(value or "").strip() in {"{}", "{", "}"} for value in (clean_stdout, clean_stderr)):
+            generic_detail = "CLI bos hata yaniti dondurdu. Bu genelde prompt ya da referans gorsel PixVerse tarafinda reddedildiginde gorulur."
+        else:
+            generic_detail = "Beklenmeyen bir hata olustu."
+
     return UserFacingError(
         status=stage,
-        reason="İşlem tamamlanamadı",
-        detail=generic_detail.splitlines()[0][:180],
+        reason="Islem tamamlanamadi",
+        detail=generic_detail[:180],
         duration=elapsed,
-        result="Video Başarısız",
+        result="Video Basarisiz",
     )
 
 
@@ -738,6 +764,29 @@ def _terminate_subprocess(process: subprocess.Popen):
             pass
 
 
+def _make_wait_timeout_error(elapsed: Optional[int] = None) -> UserFacingError:
+    duration = WAIT_MAX_SECONDS if elapsed is None else max(1, int(elapsed))
+    return UserFacingError(
+        status="Video oluşturma bekleme",
+        reason="Beklenen sürede oluşturulamadı",
+        detail=f"{WAIT_MAX_SECONDS} saniye içinde tamamlanmış sonuç alınamadı.",
+        duration=duration,
+        result="Video Başarısız",
+    )
+
+
+def _is_wait_timeout_error(err: UserFacingError) -> bool:
+    return "beklenen sürede oluşturulamadı" in (err.reason or "").casefold()
+
+
+def _start_wait_process(task_or_video_id: Any, output_dir: Path, timeout_seconds: int) -> subprocess.Popen:
+    timeout_value = max(1, int(timeout_seconds))
+    return start_process(
+        ["pixverse", "task", "wait", str(task_or_video_id), "--json", "--timeout", str(timeout_value)],
+        cwd=output_dir,
+    )
+
+
 def wait_for_completion(task_or_video_id: Optional[Any], output_dir: Path) -> dict:
     if task_or_video_id is None or str(task_or_video_id).strip() == "":
         raise UserFacingError(
@@ -747,11 +796,13 @@ def wait_for_completion(task_or_video_id: Optional[Any], output_dir: Path) -> di
             result="Video Başarısız",
         )
 
-    process = start_process(["pixverse", "task", "wait", str(task_or_video_id), "--json"], cwd=output_dir)
+    process = _start_wait_process(task_or_video_id, output_dir, WAIT_TIMEOUT_SECONDS)
     print("Video oluşturuluyor")
 
     start_time = time.monotonic()
     next_log_at = POLL_INTERVAL_SECONDS
+    soft_timeout_logged = False
+    wait_timeout_retry_used = False
 
     while True:
         bekle_pause_varsa()
@@ -760,18 +811,42 @@ def wait_for_completion(task_or_video_id: Optional[Any], output_dir: Path) -> di
             print("[STOP] Video oluşturma beklemesi sonlandırıldı.")
             raise SystemExit(0)
 
-        return_code = process.poll()
         elapsed = int(time.monotonic() - start_time)
+        if not soft_timeout_logged and elapsed >= WAIT_TIMEOUT_SECONDS:
+            soft_timeout_logged = True
+            if WAIT_MAX_SECONDS > WAIT_TIMEOUT_SECONDS:
+                print(
+                    f"[WARN] Video oluşturma {WAIT_TIMEOUT_SECONDS} sn'yi geçti. "
+                    f"{WAIT_MAX_SECONDS} sn'ye kadar ek süre bekleniyor..."
+                )
+
+        if elapsed >= WAIT_MAX_SECONDS:
+            _terminate_subprocess(process)
+            raise _make_wait_timeout_error(elapsed)
+
+        return_code = process.poll()
         if return_code is not None:
             stdout, stderr = process.communicate()
             if return_code != 0:
-                raise build_user_error(
+                err = build_user_error(
                     stage="Video oluşturma bekleme",
                     stdout=stdout,
                     stderr=stderr,
                     return_code=return_code,
                     elapsed=elapsed,
                 )
+                remaining = WAIT_MAX_SECONDS - elapsed
+                if _is_wait_timeout_error(err) and not wait_timeout_retry_used and remaining > 0:
+                    wait_timeout_retry_used = True
+                    print(
+                        f"[WARN] Bekleme {elapsed} sn sonunda tamamlanmadı. "
+                        f"Son {remaining} sn için tekrar kontrol ediliyor..."
+                    )
+                    process = _start_wait_process(task_or_video_id, output_dir, remaining)
+                    continue
+                if _is_wait_timeout_error(err) and elapsed >= WAIT_MAX_SECONDS:
+                    raise _make_wait_timeout_error(elapsed)
+                raise err
             try:
                 data = parse_json_from_output(stdout)
             except Exception:
@@ -791,14 +866,27 @@ def wait_for_completion(task_or_video_id: Optional[Any], output_dir: Path) -> di
 
         time.sleep(1)
 
-
 def download_asset_if_possible(video_id: Optional[Any], output_dir: Path) -> Optional[dict]:
     if video_id is None or str(video_id).strip() == "":
         return None
     bekle_pause_varsa()
     stop_kontrol_noktasinda_cik()
     print("Video indiriliyor...")
-    result = run_command(["pixverse", "asset", "download", str(video_id), "--json"], check=False, cwd=output_dir)
+    try:
+        result = run_command(
+            ["pixverse", "asset", "download", str(video_id), "--json"],
+            check=False,
+            cwd=output_dir,
+            timeout=DOWNLOAD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise UserFacingError(
+            status="Video indirme",
+            reason="Video indirme zaman aşımı",
+            detail=f"İndirme {DOWNLOAD_TIMEOUT_SECONDS} saniye içinde tamamlanamadı.",
+            duration=DOWNLOAD_TIMEOUT_SECONDS,
+            result="İndirme Başarısız",
+        )
     if result.returncode != 0:
         raise build_user_error(
             stage="Video indirme",
@@ -812,31 +900,85 @@ def download_asset_if_possible(video_id: Optional[Any], output_dir: Path) -> Opt
     except Exception:
         return {"raw_output": strip_ansi(result.stdout).strip()}
 
-
 def generate_video_for_prompt(prompt_klasor_adi: str, prompt: str, settings: dict, reference_image: Optional[Path], output_dir: Path, auto_download: bool = True) -> dict:
     validate_model_options(settings["model"], settings["quality"], settings["duration"], settings["aspect_ratio"])
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    prepared_reference_image = reference_image
     if reference_image:
-        print(f"Referans görsel bulundu: {reference_image}")
+        try:
+            prepared_reference_image = prepare_reference_image_for_upload(reference_image, output_dir)
+        except ReferenceImagePreparationError as exc:
+            raise UserFacingError(
+                status="Referans gorsel hazirlama",
+                reason="Referans gorsel PixVerse icin hazirlanamadi",
+                detail=str(exc),
+                result="Video Basarisiz",
+            ) from exc
+        print(f"Referans gorsel bulundu: {reference_image}")
+        if prepared_reference_image != reference_image:
+            print(f"[INFO] Referans gorsel PixVerse icin hazirlandi: {prepared_reference_image}")
     else:
-        print("Referans görsel bulunamadı; yalnız metin prompt ile denenecek.")
+        print("Referans gorsel bulunamadi; yalniz metin prompt ile denenecek.")
 
-    submit_cmd = build_video_command(
-        prompt,
-        settings["model"],
-        settings["quality"],
-        settings["duration"],
-        settings["aspect_ratio"],
-        reference_image,
-        no_wait=True,
-    )
+    prompt_varyantlari = build_prompt_variants(prompt)
+    if not prompt_varyantlari:
+        raise UserFacingError(
+            status="Prompt hazirlama",
+            reason="Prompt olusturulamadi",
+            detail="prompt.txt iceriginden gecerli bir prompt cikartilamadi.",
+            result="Video Basarisiz",
+        )
 
-    bekle_pause_varsa()
-    stop_kontrol_noktasinda_cik()
-    print("Prompt gönderildi")
-    submit_data = submit_generation(submit_cmd, output_dir)
+    submit_data = None
+    used_prompt_variant = prompt_varyantlari[0]
+    last_submit_error: Optional[UserFacingError] = None
+
+    for index, varyant in enumerate(prompt_varyantlari, start=1):
+        print(f"Prompt varyanti: {varyant['label']} ({len(varyant['prompt'])} karakter)")
+        if index > 1:
+            print("[WARN] Onceki prompt varyanti reddedildi, alternatif varyant deneniyor...")
+
+        submit_cmd = build_video_command(
+            varyant["prompt"],
+            settings["model"],
+            settings["quality"],
+            settings["duration"],
+            settings["aspect_ratio"],
+            prepared_reference_image,
+            no_wait=True,
+        )
+
+        bekle_pause_varsa()
+        stop_kontrol_noktasinda_cik()
+        print("Prompt gonderildi")
+        try:
+            submit_data = submit_generation(submit_cmd, output_dir)
+            used_prompt_variant = varyant
+            break
+        except UserFacingError as exc:
+            last_submit_error = exc
+            next_variant = prompt_varyantlari[index] if index < len(prompt_varyantlari) else None
+            can_retry = (
+                next_variant is not None
+                and (
+                    is_sensitive_info_error_message(exc.reason)
+                    or is_sensitive_info_error_message(exc.detail)
+                )
+            )
+            if can_retry:
+                print(f"[WARN] PixVerse promptta hassas bilgi algiladi. Siradaki varyant denenecek: {next_variant['label']}.")
+                continue
+            raise
+
+    if submit_data is None:
+        raise last_submit_error or UserFacingError(
+            status="Prompt gonderme",
+            reason="Islem tamamlanamadi",
+            detail="Prompt PixVerse'e gonderilemedi.",
+            result="Video Basarisiz",
+        )
 
     task_id = submit_data.get("task_id") or submit_data.get("video_id") or submit_data.get("id")
     wait_result = wait_for_completion(task_id, output_dir)
@@ -853,6 +995,9 @@ def generate_video_for_prompt(prompt_klasor_adi: str, prompt: str, settings: dic
         "quality": settings["quality"],
         "settings": settings,
         "reference_image": str(reference_image) if reference_image else None,
+        "prepared_reference_image": str(prepared_reference_image) if prepared_reference_image else None,
+        "prompt_variant": used_prompt_variant["name"],
+        "prompt_length": len(used_prompt_variant["prompt"]),
         "submit_result": submit_data,
         "wait_result": wait_result,
         "download_result": download_result,
@@ -929,6 +1074,9 @@ def pixverse_grok_toplu(auto_download: bool = True, force_relogin: bool = False)
     print(f"  En Boy Oranı: {settings['aspect_ratio']}")
     print(f"  Süre: {settings['duration']}s")
     print(f"  Ses: {settings['ses']} (Grok Imagine CLI için bilgi amaçlı)")
+    override_state = load_video_settings_override_state(CONTROL_DIR)
+    if str(override_state.get("mode") or "").strip().lower() == "per_video":
+        print(f"[INFO] Video bazlı ayar override aktif: {len(override_state.get('entries', []))} kayıt")
 
     ensure_logged_in(force_relogin=force_relogin)
 
@@ -963,12 +1111,19 @@ def pixverse_grok_toplu(auto_download: bool = True, force_relogin: bool = False)
             continue
 
         gorsel_yolu = gorsel_bul(prompt_klasor)
+        prompt_settings, override_entry = resolve_prompt_video_settings(prompt_klasor, settings, override_state)
+        if override_entry:
+            print(
+                f"[INFO] {prompt_klasor} için özel video ayarı uygulanıyor: "
+                f"{prompt_settings.get('aspect_ratio')} / {prompt_settings.get('duration')}s / "
+                f"{prompt_settings.get('quality')} / ses={prompt_settings.get('ses')}"
+            )
 
         try:
             result = generate_video_for_prompt(
                 prompt_klasor_adi=prompt_klasor,
                 prompt=prompt_metni,
-                settings=settings,
+                settings=prompt_settings,
                 reference_image=gorsel_yolu,
                 output_dir=video_kayit_klasoru,
                 auto_download=auto_download,

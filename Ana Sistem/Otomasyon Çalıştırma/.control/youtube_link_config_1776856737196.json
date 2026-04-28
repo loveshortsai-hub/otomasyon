@@ -1,0 +1,11 @@
+{
+  "output": "C:\\Users\\User\\Desktop\\Otomasyon\\İndirilecek Video.txt",
+  "mode": "popular",
+  "video_type": "shorts",
+  "entries": [
+    {
+      "url": "https://www.youtube.com/@Starpet3833",
+      "count": 2
+    }
+  ]
+}

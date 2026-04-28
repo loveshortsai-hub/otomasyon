@@ -1,0 +1,21 @@
+{
+  "mode": "Video",
+  "clone_model": "Motion Control",
+  "modify_prompt": "",
+  "selected_videos": [],
+  "uploaded_videos": [],
+  "selected_image": "",
+  "uploaded_image": "",
+  "use_system_images": true,
+  "system_image_sources": [
+    "gorsel_analiz",
+    "gorsel_klonla",
+    "gorsel_olustur"
+  ],
+  "motion_model": "v5.6",
+  "motion_quality": "720p",
+  "modify_model": "v5.5",
+  "modify_quality": "720p",
+  "modify_keyframe_time": 0,
+  "tasks": {}
+}

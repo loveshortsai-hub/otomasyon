@@ -545,7 +545,7 @@ def kullanicidan_video_sec(mp4_dosyalar, gorsel_dosyalari):
         video_ekle = 'V' in secim
         ses_efekti_ekle = 'S' in secim
         orijinal_ses_ekle_flag = 'O' in secim
-        secim_temiz = secim.replace('M', '').replace('C', '').replace('L', '').replace('V', '').replace('S', '').replace('O', '').replace(',', ' ').replace(';', ' ').strip()
+        secim_temiz = secim.replace('M', '').replace('C', '').replace('L', '').replace('V', '').replace('S', '').replace('O', '').replace(',', ' ').replace(';', ' ').replace('.', ' ').strip()
         
         secilen_dosyalar = []
         video_mu = []
@@ -913,11 +913,11 @@ mp4_dosyalar_video.sort(key=akilli_siralama)
 
 mp4_dosyalar_klon = []
 if os.path.exists(klon_video_klasor):
-    # Klon Video klasöründeki "Klon Video N" klasörlerini tara
+    # Klon Video klasöründeki "Klon Video N" veya "Video N" klasörlerini tara
     for item in os.listdir(klon_video_klasor):
         item_full_path = os.path.join(klon_video_klasor, item)
-        # "Klon Video 1", "Klon Video 2" vb. formatı
-        if os.path.isdir(item_full_path) and re.match(r'^Klon Video \d+$', item, re.IGNORECASE):
+        # "Klon Video 1", "Video 1" vb. formatlar
+        if os.path.isdir(item_full_path) and re.match(r'^(?:Klon\s+)?Video \d+$', item, re.IGNORECASE):
             mp4s_in_folder = glob.glob(os.path.join(item_full_path, '*.mp4'))
             mp4_dosyalar_klon.extend(mp4s_in_folder)
 

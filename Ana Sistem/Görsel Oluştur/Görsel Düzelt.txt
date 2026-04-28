@@ -1,1 +1,0 @@
-Görsel 1: Görseldeki karakteri referans görseldeki karakter olarak değiştir.

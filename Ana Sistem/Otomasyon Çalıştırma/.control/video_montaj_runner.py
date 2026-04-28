@@ -52,6 +52,8 @@ def main():
         try:
             answer = next(answers)
         except StopIteration:
+            if 'Se' in prompt or 'secim' in prompt.lower():
+                raise RuntimeError('Video Montaj beklenmeyen ek secim istedi; kayitli secim gecersiz olabilir.')
             answer = ''
         print(answer)
         return answer
