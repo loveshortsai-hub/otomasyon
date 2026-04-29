@@ -1,0 +1,63 @@
+{
+  "mode": "per_video",
+  "source_mode": "auto",
+  "entries": [
+    {
+      "target_key": "link_1",
+      "label": "Link 1",
+      "source_label": "Link",
+      "source_mode": "link",
+      "source_kind": "link",
+      "source_no": 1,
+      "video_path": "",
+      "video_name": "",
+      "prompt_folder": "",
+      "source_link": "https://www.instagram.com/reels/DSBeBr7jE09/",
+      "detected": {
+        "actual_duration_seconds": 0.0,
+        "actual_duration_label": "",
+        "actual_resolution": "",
+        "aspect_ratio": "",
+        "duration": 0
+      },
+      "note": "Yerel video dosyası henüz bulunamadı. Süre ve boyut alanlarını elle düzenleyebilirsiniz.",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "duration": 3,
+        "ses": "açık",
+        "quality": "720p",
+        "model": "happyhorse-1.0"
+      }
+    },
+    {
+      "target_key": "link_2",
+      "label": "Link 2",
+      "source_label": "Link",
+      "source_mode": "link",
+      "source_kind": "link",
+      "source_no": 2,
+      "video_path": "",
+      "video_name": "",
+      "prompt_folder": "",
+      "source_link": "https://www.tiktok.com/@sha_ai_1/video/7612414083081587988?q=sha_ai_1&t=1777144576493",
+      "detected": {
+        "actual_duration_seconds": 0.0,
+        "actual_duration_label": "",
+        "actual_resolution": "",
+        "aspect_ratio": "",
+        "duration": 0
+      },
+      "note": "Yerel video dosyası henüz bulunamadı. Süre ve boyut alanlarını elle düzenleyebilirsiniz.",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "duration": 3,
+        "ses": "açık",
+        "quality": "720p",
+        "model": "happyhorse-1.0"
+      }
+    }
+  ],
+  "saved_at": "2026-04-29 02:40:24",
+  "selected_model": "Happy Horse 1.0",
+  "video_mode": "normal"
+}

@@ -4262,6 +4262,43 @@ def _list_social_media_source_video_candidates(video_root: str) -> list:
     return out
 
 
+def _social_media_batch_will_generate_videos() -> bool:
+    try:
+        queue = st.session_state.get("batch_queue", [])
+        if not isinstance(queue, list):
+            return False
+        return st.session_state.get("batch_mode", False) and "pixverse" in queue
+    except Exception:
+        return False
+
+
+def _resolve_social_media_link_runtime_source_root(settings_obj: dict) -> str:
+    s = settings_obj if isinstance(settings_obj, dict) else {}
+    generated_root = (s.get("sosyal_medya_video_dir") or s.get("video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
+    downloaded_root = (s.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
+
+    generated_count = len(_list_social_media_source_video_candidates(generated_root))
+    downloaded_count = len(_list_social_media_source_video_candidates(downloaded_root))
+
+    if _social_media_batch_will_generate_videos():
+        return generated_root
+
+    if generated_count > 0 and downloaded_count <= 0:
+        return generated_root
+
+    try:
+        prompt_source_mode_path = os.path.join(CONTROL_DIR, "prompt_source_mode.txt")
+        if generated_count > 0 and os.path.exists(prompt_source_mode_path):
+            with open(prompt_source_mode_path, "r", encoding="utf-8", errors="ignore") as f:
+                prompt_source_mode = str(f.read() or "").strip().lower()
+            if prompt_source_mode in {"link", "youtube", "manual"}:
+                return generated_root
+    except Exception:
+        pass
+
+    return downloaded_root
+
+
 def _normalize_single_video_for_social_media(video_path: str, target_width: int, target_height: int, has_audio: bool) -> tuple[bool, str, str]:
     video_path = str(video_path or "").strip()
     if not video_path or not os.path.isfile(video_path):
@@ -4454,7 +4491,7 @@ def _resolve_social_media_launch_context_early() -> dict:
     elif kaynak_secim == "🎞️ Video Montaj":
         source_root = (s.get("video_montaj_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Montaj").strip()
     elif kaynak_secim == "Link":
-        source_root = (s.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
+        source_root = _resolve_social_media_link_runtime_source_root(s)
     else:
         source_root = (s.get("sosyal_medya_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
 
@@ -5637,7 +5674,7 @@ if "start_sosyal_medya_bg" not in globals():
         source_selection = str(ctx.get("source_selection") or "").strip()
         source_root = str(ctx.get("source_root") or "").strip()
 
-        if source_selection in {"Video", "🖼️ Görsel Oluştur", "🎬 Klon Video"} and source_root:
+        if source_selection in {"Link", "Video", "🖼️ Görsel Oluştur", "🎬 Klon Video"} and source_root:
             log(f"[INFO] Sosyal medya ön hazırlığı: {source_selection} kaynağı için video uyumluluğu kontrol ediliyor...")
             compat_summary = _prepare_videos_for_social_media_compat(source_root)
             _log_social_media_compat_prep(compat_summary)
@@ -7723,9 +7760,7 @@ def sosyal_medya_ensure_files(sync_source_selection: bool = False):
                 if not video_dir:
                     video_dir = r"C:\Users\User\Desktop\Otomasyon\Video\Montaj"
             elif kaynak_secim == "Link":
-                video_dir = (st.session_state.settings.get("download_dir") or "").strip()
-                if not video_dir:
-                    video_dir = r"C:\Users\User\Desktop\Otomasyon\İndirilen Video"
+                video_dir = _resolve_social_media_link_runtime_source_root(st.session_state.settings)
             else:
                 video_dir = (st.session_state.settings.get("sosyal_medya_video_dir") or "").strip()
                 if not video_dir:
@@ -7903,27 +7938,41 @@ def sosyal_medya_link_kaynak_haritasi() -> dict[int, str]:
 def sosyal_medya_video_numaralari() -> set[int]:
     video_root = (st.session_state.settings.get("sosyal_medya_video_dir") or st.session_state.settings.get("video_output_dir") or "").strip()
     if not video_root or not os.path.isdir(video_root):
-        return set()
+        video_root = ""
 
     valid_ext = (".mp4", ".mov", ".avi", ".mkv", ".webm")
     nums = set()
-    try:
-        entries = sorted(os.listdir(video_root), key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", x)])
-    except Exception:
-        return set()
+    if video_root:
+        try:
+            entries = sorted(os.listdir(video_root), key=lambda x: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", x)])
+        except Exception:
+            entries = []
 
-    subdirs = [e for e in entries if os.path.isdir(os.path.join(video_root, e))]
-    if subdirs:
-        for idx, name in enumerate(subdirs, start=1):
-            m = re.search(r"(\d+)\s*$", name)
+        subdirs = [e for e in entries if os.path.isdir(os.path.join(video_root, e))]
+        if subdirs:
+            for idx, name in enumerate(subdirs, start=1):
+                m = re.search(r"(\d+)\s*$", name)
+                nums.add(int(m.group(1)) if m else idx)
+            if nums:
+                return nums
+
+        file_list = [e for e in entries if os.path.isfile(os.path.join(video_root, e)) and e.lower().endswith(valid_ext)]
+        for idx, name in enumerate(file_list, start=1):
+            m = re.search(r"(\d+)\s*$", os.path.splitext(name)[0])
             nums.add(int(m.group(1)) if m else idx)
-        return nums
+        if nums:
+            return nums
 
-    file_list = [e for e in entries if os.path.isfile(os.path.join(video_root, e)) and e.lower().endswith(valid_ext)]
-    for idx, name in enumerate(file_list, start=1):
-        m = re.search(r"(\d+)\s*$", os.path.splitext(name)[0])
-        nums.add(int(m.group(1)) if m else idx)
-    return nums
+    planned_count = 0
+    try:
+        planned_count = _count_standard_video_prompt_entries()
+        if planned_count <= 0:
+            planned_count = _get_prompt_input_count()
+    except Exception:
+        planned_count = 0
+    if planned_count > 0:
+        return set(range(1, planned_count + 1))
+    return set()
 
 
 def _sm_klasorden_video_numaralari(video_root: str) -> set[int]:
