@@ -4262,43 +4262,6 @@ def _list_social_media_source_video_candidates(video_root: str) -> list:
     return out
 
 
-def _social_media_batch_will_generate_videos() -> bool:
-    try:
-        queue = st.session_state.get("batch_queue", [])
-        if not isinstance(queue, list):
-            return False
-        return st.session_state.get("batch_mode", False) and "pixverse" in queue
-    except Exception:
-        return False
-
-
-def _resolve_social_media_link_runtime_source_root(settings_obj: dict) -> str:
-    s = settings_obj if isinstance(settings_obj, dict) else {}
-    generated_root = (s.get("sosyal_medya_video_dir") or s.get("video_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
-    downloaded_root = (s.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
-
-    generated_count = len(_list_social_media_source_video_candidates(generated_root))
-    downloaded_count = len(_list_social_media_source_video_candidates(downloaded_root))
-
-    if _social_media_batch_will_generate_videos():
-        return generated_root
-
-    if generated_count > 0 and downloaded_count <= 0:
-        return generated_root
-
-    try:
-        prompt_source_mode_path = os.path.join(CONTROL_DIR, "prompt_source_mode.txt")
-        if generated_count > 0 and os.path.exists(prompt_source_mode_path):
-            with open(prompt_source_mode_path, "r", encoding="utf-8", errors="ignore") as f:
-                prompt_source_mode = str(f.read() or "").strip().lower()
-            if prompt_source_mode in {"link", "youtube", "manual"}:
-                return generated_root
-    except Exception:
-        pass
-
-    return downloaded_root
-
-
 def _normalize_single_video_for_social_media(video_path: str, target_width: int, target_height: int, has_audio: bool) -> tuple[bool, str, str]:
     video_path = str(video_path or "").strip()
     if not video_path or not os.path.isfile(video_path):
@@ -4491,7 +4454,7 @@ def _resolve_social_media_launch_context_early() -> dict:
     elif kaynak_secim == "🎞️ Video Montaj":
         source_root = (s.get("video_montaj_output_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Montaj").strip()
     elif kaynak_secim == "Link":
-        source_root = _resolve_social_media_link_runtime_source_root(s)
+        source_root = (s.get("download_dir") or r"C:\Users\User\Desktop\Otomasyon\İndirilen Video").strip()
     else:
         source_root = (s.get("sosyal_medya_video_dir") or r"C:\Users\User\Desktop\Otomasyon\Video\Video").strip()
 
@@ -7760,7 +7723,9 @@ def sosyal_medya_ensure_files(sync_source_selection: bool = False):
                 if not video_dir:
                     video_dir = r"C:\Users\User\Desktop\Otomasyon\Video\Montaj"
             elif kaynak_secim == "Link":
-                video_dir = _resolve_social_media_link_runtime_source_root(st.session_state.settings)
+                video_dir = (st.session_state.settings.get("download_dir") or "").strip()
+                if not video_dir:
+                    video_dir = r"C:\Users\User\Desktop\Otomasyon\İndirilen Video"
             else:
                 video_dir = (st.session_state.settings.get("sosyal_medya_video_dir") or "").strip()
                 if not video_dir:
